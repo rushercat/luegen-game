@@ -337,31 +337,3 @@ function escapeHtml(str) {
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]
   ));
 }
- the current game and return everyone to the waiting room?')) {
-    socket.emit('endGame');
-  }
-};
-$('leaveBtn').onclick = () => {
-  $('settingsMenu').classList.add('hidden');
-  if (confirm('Leave this room and go back to the main lobby?')) {
-    location.reload();
-  }
-};
-
-// ---------- Util ----------
-function escapeHtml(str) {
-  return String(str).replace(/[&<>"']/g, s => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]
-  ));
-}
- (confirm('Leave this room and go back to the main lobby?')) {
-    location.reload();
-  }
-};
-
-// ---------- Util ----------
-function escapeHtml(str) {
-  return String(str).replace(/[&<>"']/g, s => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]
-  ));
-}
