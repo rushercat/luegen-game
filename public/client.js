@@ -127,24 +127,33 @@ function renderWaitingRoom(state) {
 }
 
 function renderGame(state) {
-  // --- Opponents ---
+  // --- All players at the top, sorted by seat number, including yourself ---
   const opp = $('opponents');
   opp.innerHTML = '';
   state.players.forEach((p, idx) => {
-    if (p.id === myId) return;
     const isCurrent = idx === state.currentTurnIdx;
     const canChallenge = p.id === state.canChallengeId;
+    const isMe = p.id === myId;
     const div = document.createElement('div');
-    div.className = `bg-black/40 p-3 rounded-xl text-center min-w-[110px] border ${isCurrent ? 'border-yellow-400 ring-2 ring-yellow-400' : 'border-white/10'}`;
+    const borderCls = isCurrent
+      ? 'border-yellow-400 ring-2 ring-yellow-400'
+      : isMe ? 'border-emerald-400' : 'border-white/10';
+    div.className = `relative bg-black/40 p-3 rounded-xl text-center min-w-[110px] border ${borderCls}`;
     div.innerHTML = `
+      ${p.seatNumber ? `<div class="absolute -top-2 -left-2 bg-yellow-400 text-black w-7 h-7 rounded-full flex items-center justify-center font-extrabold text-sm shadow">${p.seatNumber}</div>` : ''}
+      ${isMe ? '<div class="absolute -top-2 -right-2 bg-emerald-400 text-black px-2 py-0.5 rounded-full text-[10px] font-extrabold shadow">YOU</div>' : ''}
       <div class="font-bold truncate">${escapeHtml(p.name)}${p.isSkipped ? ' ⏭' : ''}</div>
-      <div class="text-3xl my-1">🂠</div>
+      <div class="text-3xl my-1">${isMe ? '🃏' : '🂠'}</div>
       <div class="text-sm">${p.cardCount} card${p.cardCount === 1 ? '' : 's'}</div>
       ${canChallenge ? '<div class="text-[10px] mt-1 text-red-300">may challenge</div>' : ''}
       ${!p.connected ? '<div class="text-[10px] text-gray-400">disconnected</div>' : ''}
     `;
     opp.appendChild(div);
   });
+  // Own seat badge above the hand (kept as a redundant cue)
+  const me = state.players.find(p => p.id === myId);
+  const mySeat = $('mySeat');
+  if (mySeat) mySeat.textContent = me && me.seatNumber ? `You are #${me.seatNumber}` : '';
 
   // --- Center ---
   $('targetRank').textContent = state.targetRank || '—';
@@ -299,6 +308,34 @@ $('endGameBtn').onclick = () => {
 $('leaveBtn').onclick = () => {
   $('settingsMenu').classList.add('hidden');
   if (confirm('Leave this room and go back to the main lobby?')) {
+    location.reload();
+  }
+};
+
+// ---------- Util ----------
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, s => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]
+  ));
+}
+ the current game and return everyone to the waiting room?')) {
+    socket.emit('endGame');
+  }
+};
+$('leaveBtn').onclick = () => {
+  $('settingsMenu').classList.add('hidden');
+  if (confirm('Leave this room and go back to the main lobby?')) {
+    location.reload();
+  }
+};
+
+// ---------- Util ----------
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, s => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]
+  ));
+}
+ (confirm('Leave this room and go back to the main lobby?')) {
     location.reload();
   }
 };

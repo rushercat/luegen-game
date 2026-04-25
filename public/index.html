@@ -110,7 +110,10 @@
 
       <!-- Player hand -->
       <div class="mt-6">
-        <div class="text-sm mb-2 text-emerald-200">Your Hand (<span id="handCount">0</span>) — click to select up to 3</div>
+        <div class="flex items-center justify-between mb-2 text-sm text-emerald-200">
+          <span>Your Hand (<span id="handCount">0</span>) — click to select up to 3</span>
+          <span id="mySeat" class="bg-yellow-400 text-black px-3 py-1 rounded-full font-bold text-xs"></span>
+        </div>
         <div id="hand" class="flex flex-wrap gap-2 justify-center"></div>
       </div>
 

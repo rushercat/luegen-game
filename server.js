@@ -84,12 +84,13 @@ function publicState(room) {
   return {
     id: room.id,
     hostId: room.hostId,
-    players: room.players.map(p => ({
+    players: room.players.map((p, idx) => ({
       id: p.id,
       name: p.name,
       cardCount: p.hand.length,
       isSkipped: !!p.isSkipped,
-      connected: !!p.connected
+      connected: !!p.connected,
+      seatNumber: room.started ? idx + 1 : null
     })),
     started: room.started,
     currentTurnIdx: room.currentTurnIdx,
@@ -197,6 +198,8 @@ io.on('connection', (socket) => {
     if (room.hostId !== socket.id) return emitError('Only the host can start.');
     if (room.players.length < 2) return emitError('Need at least 2 players.');
     if (room.started) return;
+    // Randomize seating order: each player gets a unique number 1..N, #1 starts.
+    shuffle(room.players);
     const deck = shuffle(createDeck());
     const hands = dealCards(deck, room.players.length);
     room.players.forEach((p, i) => { p.hand = hands[i]; p.isSkipped = false; });
@@ -204,7 +207,9 @@ io.on('connection', (socket) => {
     room.currentTurnIdx = 0;
     room.targetRank = null;
     clearPile(room);
-    room.log.push(`Game started with ${room.players.length} players. ${room.players[0].name} chooses the first Target Rank.`);
+    const seating = room.players.map((p, i) => `#${i + 1} ${p.name}`).join(', ');
+    room.log.push(`Game started — seating: ${seating}.`);
+    room.log.push(`#1 ${room.players[0].name} chooses the first Target Rank and starts.`);
     if (checkInstantLoss(room)) { broadcast(room); return; }
     broadcast(room);
   });
@@ -287,17 +292,22 @@ io.on('connection', (socket) => {
 
     if (wasLie) {
       lastPlayer.hand.push(...room.pile);
+      // Defensive: make sure no stale skip flag is hanging on the liar
+      lastPlayer.isSkipped = false;
       room.log.push(`🚨 ${challenger.name} called LIAR — ${lastPlayer.name} was lying and takes the pile (${room.pile.length} cards).`);
       const challengerIdx = room.players.findIndex(p => p.id === challenger.id);
       clearPile(room);
       room.currentTurnIdx = challengerIdx;
     } else {
+      const takenCount = room.pile.length;
       challenger.hand.push(...room.pile);
-      room.log.push(`❌ ${challenger.name} falsely accused ${lastPlayer.name}, takes the pile (${room.pile.length} cards) and is skipped.`);
-      challenger.isSkipped = true;
+      // The skip is implemented by moving the round start past them — do NOT
+      // also set isSkipped, otherwise they'd get skipped a second time when
+      // the turn cycles back to them.
       const challengerIdx = room.players.findIndex(p => p.id === challenger.id);
       clearPile(room);
       room.currentTurnIdx = nextPlayerIdx(room, challengerIdx);
+      room.log.push(`❌ ${challenger.name} falsely accused ${lastPlayer.name}, takes the pile (${takenCount} cards) and is skipped — ${room.players[room.currentTurnIdx].name} starts the new round.`);
     }
 
     if (checkInstantLoss(room)) { broadcast(room); return; }
@@ -366,6 +376,33 @@ io.on('connection', (socket) => {
       // Just remove if game hasn't started
       room.players = room.players.filter(p => p.id !== socket.id);
       if (room.hostId === socket.id && room.players.length > 0) {
+        room.hostId = room.players[0].id;
+      }
+      if (room.players.length === 0) { delete rooms[room.id]; return; }
+      room.log.push(`${player.name} left the lobby.`);
+    } else {
+      room.log.push(`${player.name} disconnected.`);
+    }
+    broadcast(room);
+  });
+});
+
+server.listen(PORT, () => {
+  console.log(`Lugen server listening on port ${PORT}`);
+});
+ms[room.id]; return; }
+      room.log.push(`${player.name} left the lobby.`);
+    } else {
+      room.log.push(`${player.name} disconnected.`);
+    }
+    broadcast(room);
+  });
+});
+
+server.listen(PORT, () => {
+  console.log(`Lugen server listening on port ${PORT}`);
+});
+ {
         room.hostId = room.players[0].id;
       }
       if (room.players.length === 0) { delete rooms[room.id]; return; }
