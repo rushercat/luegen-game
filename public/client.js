@@ -304,17 +304,27 @@ function updateFourBtn() {
 }
 
 function showGameOver(state) {
-  const loser = state.players.find(p => p.id === state.loser);
+  const losers = (state.losers || []).map(id => state.players.find(p => p.id === id)).filter(Boolean);
+  const loserNames = losers.map(p => p.name).join(' and ');
   $('gameOver').classList.remove('hidden');
   if (state.winners.includes(myId)) {
     $('gameOverTitle').textContent = '🏆 You Won!';
-    $('gameOverText').textContent = loser ? `${loser.name} lost.` : 'Everyone else lost.';
-  } else if (state.loser === myId) {
+    $('gameOverText').textContent = losers.length > 0
+      ? `${loserNames} ${losers.length > 1 ? 'lose' : 'lost'}.`
+      : 'Everyone else lost.';
+  } else if ((state.losers || []).includes(myId)) {
     $('gameOverTitle').textContent = '💀 You Lost!';
-    $('gameOverText').textContent = 'Better luck next time.';
+    if (losers.length > 1) {
+      const others = losers.filter(p => p.id !== myId).map(p => p.name).join(', ');
+      $('gameOverText').textContent = `Last two with cards both lose — you and ${others}.`;
+    } else {
+      $('gameOverText').textContent = 'Better luck next time.';
+    }
   } else {
     $('gameOverTitle').textContent = 'Game Over';
-    $('gameOverText').textContent = loser ? `${loser.name} lost.` : '';
+    $('gameOverText').textContent = losers.length > 0
+      ? `${loserNames} ${losers.length > 1 ? 'lose' : 'lost'}.`
+      : '';
   }
 }
 

@@ -74,7 +74,7 @@ function newRoom(id) {
     revealedFour: null,
     gameOver: false,
     winners: [],
-    loser: null,
+    losers: [],
     hostId: null
   };
 }
@@ -101,7 +101,7 @@ function publicState(room) {
     revealedFour: room.revealedFour,
     gameOver: room.gameOver,
     winners: room.winners,
-    loser: room.loser,
+    losers: room.losers,
     log: room.log.slice(-30)
   };
 }
@@ -139,7 +139,7 @@ function checkInstantLoss(room) {
   for (const p of room.players) {
     if (p.hand.filter(c => c.rank === 'J').length === 4) {
       room.gameOver = true;
-      room.loser = p.id;
+      room.losers = [p.id];
       room.winners = room.players.filter(x => x.id !== p.id).map(x => x.id);
       room.log.push(`${p.name} holds all 4 Jacks - instant loss!`);
       return true;
@@ -151,11 +151,21 @@ function checkInstantLoss(room) {
 function checkLastPlayerStanding(room) {
   if (room.gameOver) return;
   const withCards = room.players.filter(p => p.hand.length > 0);
-  if (withCards.length === 1 && room.players.length > 1) {
+  const totalPlayers = room.players.length;
+  // For 2-player games: classic rule — last with cards loses (1 left).
+  // For 3+ player games: game ends as soon as only 2 are left holding cards;
+  // BOTH of those two are losers, everyone who emptied is a winner.
+  const losingThreshold = totalPlayers >= 3 ? 2 : 1;
+  if (totalPlayers > 1 && withCards.length > 0 && withCards.length <= losingThreshold) {
     room.gameOver = true;
-    room.loser = withCards[0].id;
+    room.losers = withCards.map(p => p.id);
     room.winners = room.players.filter(p => p.hand.length === 0).map(p => p.id);
-    room.log.push(`${withCards[0].name} is left with cards and loses the game.`);
+    if (withCards.length === 1) {
+      room.log.push(`${withCards[0].name} is left with cards and loses the game.`);
+    } else {
+      const names = withCards.map(p => p.name).join(' and ');
+      room.log.push(`Only ${names} are left with cards — both lose!`);
+    }
   }
 }
 
@@ -355,7 +365,7 @@ io.on('connection', (socket) => {
     room.started = false;
     room.gameOver = false;
     room.winners = [];
-    room.loser = null;
+    room.losers = [];
     room.currentTurnIdx = 0;
     room.revealedFour = null;
     room.players.forEach(p => { p.hand = []; p.isSkipped = false; });
@@ -371,7 +381,7 @@ io.on('connection', (socket) => {
     room.started = false;
     room.gameOver = false;
     room.winners = [];
-    room.loser = null;
+    room.losers = [];
     room.currentTurnIdx = 0;
     room.revealedFour = null;
     room.players.forEach(p => { p.hand = []; p.isSkipped = false; });
