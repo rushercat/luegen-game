@@ -11,12 +11,10 @@ const RANKS = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
 const TARGET_RANKS = RANKS.filter(r => r !== 'J');
 const SUIT_SYMBOLS = { H: '♥', D: '♦', C: '♣', S: '♠', '*': '★' };
 const SUIT_COLORS  = { H: 'text-red-600', D: 'text-red-600', C: 'text-black', S: 'text-black', '*': 'text-purple-700' };
+const SUITS_FOR_CHIPS = ['H', 'D', 'C', 'S'];
 
 const STORAGE_KEY = 'lugen-session';
 
-// Audio cues for Liar's Bar gun pulls.
-//   gunshot.mp3 - the BANG when a player is eliminated.
-//   click.mp3   - the empty-chamber click when they survive.
 const SOUND_GUNSHOT = '/sounds/gunshot.mp3';
 const SOUND_CLICK   = '/sounds/click.mp3';
 
@@ -33,7 +31,8 @@ let modSyncing = false;
 const DEFAULT_SETTINGS = {
   cardsRemoved: 0, pileStart: 0, maxCards: 3,
   mysteryHands: false, liarsBar: false, shuffleSeats: false,
-  jokerCount: 0, jokerRandom: false
+  jokerCount: 0, jokerRandom: false,
+  wildSuit: '', fogOfWar: false
 };
 
 const $ = (id) => document.getElementById(id);
@@ -58,7 +57,6 @@ function clearSession() {
 }
 
 // ---------- Sound effects ----------
-// Fresh Audio() per call so rapid pulls don't clip each other.
 function playSound(src, volume) {
   try {
     const a = new Audio(src);
@@ -218,14 +216,13 @@ socket.on('reveal', ({ cards, claimed, wasLie, challengerName, lastPlayerName })
   const rev = $('revealArea');
   const verdict = wasLie
     ? `LIE! ${challengerName} called ${lastPlayerName} out - claimed ${claimed}`
-    : `TRUTH! ${lastPlayerName} actually had ${claimed}s (or jokers)`;
+    : `TRUTH! ${lastPlayerName} actually had ${claimed}s (or wild cards)`;
   rev.innerHTML = `<div class="w-full text-center mb-2 font-bold ${wasLie ? 'text-red-300' : 'text-green-300'}">${verdict}</div>`;
   cards.forEach(c => rev.appendChild(makeCardDiv(c, false, false)));
   setTimeout(() => { if (rev.firstChild && rev.textContent.includes(claimed)) rev.innerHTML = ''; }, 4000);
 });
 
 socket.on('gunPull', ({ playerName, died, chambersBefore, chambersAfter }) => {
-  // Gunshot on elimination, empty-chamber click on survival.
   if (died) playGunshot();
   else      playClick();
   const overlay = document.createElement('div');
@@ -283,7 +280,9 @@ const MOD_FIELDS = [
   { key: 'mysteryHands', input: 'modMysteryHands', kind: 'check' },
   { key: 'liarsBar',     input: 'modLiarsBar',     kind: 'check' },
   { key: 'shuffleSeats', input: 'modShuffleSeats', kind: 'check' },
-  { key: 'jokerRandom',  input: 'modJokerRandom',  kind: 'check' }
+  { key: 'jokerRandom',  input: 'modJokerRandom',  kind: 'check' },
+  { key: 'wildSuit',     input: 'modWildSuit',     kind: 'select' },
+  { key: 'fogOfWar',     input: 'modFogOfWar',     kind: 'check' }
 ];
 const _modPending = {};
 function emitModChange(key, value) {
@@ -306,8 +305,11 @@ function applySettingsToPanel(state) {
       if (lbl) lbl.textContent = String(settings[f.key]);
     } else if (f.kind === 'check') {
       inp.checked = !!settings[f.key];
+    } else if (f.kind === 'select') {
+      inp.value = settings[f.key] || '';
     }
   }
+  // Joker slider greys out when "Random Jokers" is toggled.
   const jokerSlider = $('modJokerCount');
   const jokerLabel  = $('modJokerCountVal');
   if (jokerSlider) jokerSlider.disabled = !isHost || !!settings.jokerRandom;
@@ -337,6 +339,11 @@ function applySettingsToPanel(state) {
       inp.addEventListener('change', () => {
         if (modSyncing) return;
         emitModChange(f.key, !!inp.checked);
+      });
+    } else if (f.kind === 'select') {
+      inp.addEventListener('change', () => {
+        if (modSyncing) return;
+        emitModChange(f.key, inp.value);
       });
     }
   }
@@ -392,6 +399,12 @@ function describeActiveSettingsClient(s, state) {
   } else if (s.jokerCount > 0) {
     out.push(`Jokers (${s.jokerCount})`);
   }
+  // Wild Suit chip: prefer the resolved suit (state.actualWildSuit) so a
+  // "random" setting still shows the chosen symbol once the game starts.
+  const ws = (state && state.actualWildSuit) || (SUITS_FOR_CHIPS.includes(s.wildSuit) ? s.wildSuit : '');
+  if (ws) out.push(`Wild ${SUIT_SYMBOLS[ws] || ws}`);
+  else if (s.wildSuit === 'random') out.push('Wild Suit (random)');
+  if (s.fogOfWar)         out.push('Fog of War');
   if (s.mysteryHands)     out.push('Mystery Hands');
   if (s.shuffleSeats)     out.push('Shuffle Seats');
   return out;
@@ -466,7 +479,19 @@ function renderGame(state) {
   if (mySeat) mySeat.textContent = me && me.seatNumber ? `You are #${me.seatNumber}` : '';
 
   $('targetRank').textContent = state.targetRank || '-';
-  $('pileSize').textContent = state.pileSize;
+  // Fog of War: server sends pileSize=null. Show "?" instead.
+  $('pileSize').textContent = (state.pileSize === null || state.pileSize === undefined) ? '?' : state.pileSize;
+
+  // Wild Suit indicator under target rank.
+  const wildEl = $('wildSuitInfo');
+  if (wildEl) {
+    if (state.actualWildSuit && SUIT_SYMBOLS[state.actualWildSuit]) {
+      wildEl.innerHTML = `<span class="text-purple-300">Wild Suit:</span> <span class="text-2xl ${SUIT_COLORS[state.actualWildSuit] || ''}">${SUIT_SYMBOLS[state.actualWildSuit]}</span> <span class="text-purple-200">(any rank truthful)</span>`;
+    } else {
+      wildEl.textContent = '';
+    }
+  }
+
   if (state.lastPlayCount > 0) {
     const lp = state.players.find(p => p.id === state.lastPlayerId);
     $('lastPlayInfo').textContent = `${lp ? lp.name : 'Someone'} just played ${state.lastPlayCount} card(s).`;
@@ -545,10 +570,12 @@ function renderHand() {
 
 function makeCardDiv(card, selectable, hidden) {
   const isJoker = card && card.rank === 'JOKER';
+  const wildSuit = roomState && roomState.actualWildSuit;
+  const isWildSuit = !isJoker && wildSuit && card && card.suit === wildSuit;
   const div = document.createElement('div');
   div.className = `card rounded-lg flex flex-col items-center justify-center transition-transform ${
     hidden ? 'card-back' : 'card-face ' + (isJoker ? 'text-purple-700 bg-amber-100' : SUIT_COLORS[card.suit] || 'text-black')
-  } ${selectable ? 'cursor-pointer hover:-translate-y-1' : ''}`;
+  } ${(!hidden && isWildSuit) ? 'ring-2 ring-purple-500' : ''} ${selectable ? 'cursor-pointer hover:-translate-y-1' : ''}`;
   if (!hidden) {
     if (isJoker) {
       div.innerHTML = `

@@ -167,6 +167,31 @@
         </div>
       </label>
 
+      <!-- Wild Suit -->
+      <div class="flex items-center gap-3">
+        <div class="flex-1">
+          <div class="font-bold text-sm">Wild Suit</div>
+          <div class="text-xs text-white/60">All cards of the chosen suit count as the target rank when revealed (always truthful) — like extra jokers spread across every rank.</div>
+        </div>
+        <select id="modWildSuit" class="bg-white/10 border border-white/20 rounded px-2 py-1 text-sm disabled:opacity-40">
+          <option value="">None</option>
+          <option value="H">♥ Hearts</option>
+          <option value="D">♦ Diamonds</option>
+          <option value="C">♣ Clubs</option>
+          <option value="S">♠ Spades</option>
+          <option value="random">Random</option>
+        </select>
+      </div>
+
+      <!-- Fog of War -->
+      <label class="flex items-center gap-3 cursor-pointer">
+        <input id="modFogOfWar" type="checkbox" class="accent-yellow-400 w-4 h-4 disabled:opacity-40" />
+        <div class="flex-1">
+          <div class="font-bold text-sm">Fog of War</div>
+          <div class="text-xs text-white/60">The cumulative pile size is hidden — you only see "there's a pile". Target rank and per-play counts stay visible.</div>
+        </div>
+      </label>
+
     </div>
   </div>
 </div>
@@ -183,6 +208,7 @@
       <div class="bg-black/30 rounded-2xl p-6 text-center border border-white/10">
         <div class="text-xs uppercase tracking-widest text-yellow-300">Current Target Rank</div>
         <div id="targetRank" class="text-7xl font-extrabold my-2">—</div>
+        <div id="wildSuitInfo" class="text-sm mb-1 min-h-[1.25rem]"></div>
         <div class="text-sm text-emerald-200">Pile: <span id="pileSize" class="font-bold">0</span> cards</div>
         <div id="lastPlayInfo" class="mt-2 text-yellow-200 text-sm min-h-[1.25rem]"></div>
         <div id="revealArea" class="mt-4 flex flex-wrap justify-center gap-2 min-h-[100px]"></div>

@@ -37,6 +37,8 @@ const LIARS_BAR_GUN_CHAMBERS = 6;
 const JOKER_SLIDER_MAX = 10;
 const JOKER_RANDOM_MAX = 5;
 
+const VALID_WILD_SUITS = ['', 'H', 'D', 'C', 'S', 'random'];
+
 const LOBBY_GRACE_MS = 60 * 1000;
 const EMPTY_ROOM_GRACE_MS = 5 * 60 * 1000;
 
@@ -89,15 +91,7 @@ function dealCards(deck, numPlayers) {
   return hands;
 }
 
-// Lean Deck removal:
-//   * Jacks are NEVER dropped — the 4-Jacks instant-loss rule requires all
-//     four to remain possible.
-//   * Jokers are also exempt — they're added intentionally via the Jokers
-//     setting; dropping them would undermine that.
-//   * Drops are distributed round-robin across the remaining 12 ranks so the
-//     dropped cards are always as balanced as possible (5 dropped = 5
-//     different ranks each lose 1; 13 dropped = every eligible rank loses 1
-//     plus one rank loses 2; never "2x 7s gone but 0x 10s gone").
+// Lean Deck removal: Jacks + jokers untouched, drops spread round-robin.
 function applyLeanDeck(deck, cardsToRemove) {
   if (cardsToRemove <= 0) return deck;
   const eligibleRanks = RANKS.filter(r => r !== 'J');
@@ -155,6 +149,9 @@ function describeActiveSettings(s) {
   if (s.maxCards < 3)     out.push(`Trickle Mode (max ${s.maxCards})`);
   if (s.jokerRandom)      out.push('Random Jokers (?)');
   else if (s.jokerCount > 0) out.push(`Jokers (${s.jokerCount})`);
+  if (s.wildSuit === 'random') out.push('Wild Suit (random)');
+  else if (s.wildSuit)         out.push(`Wild Suit (${s.wildSuit})`);
+  if (s.fogOfWar)         out.push('Fog of War');
   if (s.mysteryHands)     out.push('Mystery Hands');
   if (s.shuffleSeats)     out.push('Shuffle Seats');
   return out;
@@ -169,7 +166,9 @@ function defaultSettings() {
     liarsBar:     false,
     shuffleSeats: false,
     jokerCount:   0,
-    jokerRandom:  false
+    jokerRandom:  false,
+    wildSuit:     '',     // '' | 'H' | 'D' | 'C' | 'S' | 'random'
+    fogOfWar:     false
   };
 }
 
@@ -196,18 +195,23 @@ function newRoom(id) {
     hostId: null,
     emptyTimer: null,
     settings: defaultSettings(),
-    actualJokerCount: 0
+    actualJokerCount: 0,
+    actualWildSuit: ''      // resolved at startGame
   };
 }
 
 function publicState(room) {
   const hideCounts = room.settings && room.settings.mysteryHands && room.started && !room.gameOver;
   const hideJokerCount = room.started && !room.gameOver && !!room.settings.jokerRandom;
+  // Fog of War hides only the cumulative pile size — target rank, last play
+  // count, etc. all stay visible.
+  const hidePile = room.settings && room.settings.fogOfWar && room.started && !room.gameOver;
   return {
     id: room.id,
     hostId: room.hostId,
     settings: room.settings,
     actualJokerCount: hideJokerCount ? null : room.actualJokerCount,
+    actualWildSuit: room.actualWildSuit || '',
     players: room.players.map((p, idx) => ({
       id: p.id,
       name: p.name,
@@ -221,7 +225,7 @@ function publicState(room) {
     started: room.started,
     currentTurnIdx: room.currentTurnIdx,
     targetRank: room.targetRank,
-    pileSize: room.pile.length,
+    pileSize: hidePile ? null : room.pile.length,
     lastPlayCount: room.lastPlayCount,
     lastPlayerId: room.lastPlayerId,
     canChallengeId: room.canChallengeId,
@@ -457,6 +461,11 @@ io.on('connection', (socket) => {
     if ('shuffleSeats' in patch) s.shuffleSeats = !!patch.shuffleSeats;
     if ('jokerCount'   in patch) s.jokerCount   = clampInt(patch.jokerCount, 0, JOKER_SLIDER_MAX);
     if ('jokerRandom'  in patch) s.jokerRandom  = !!patch.jokerRandom;
+    if ('wildSuit'     in patch) {
+      const v = String(patch.wildSuit || '');
+      s.wildSuit = VALID_WILD_SUITS.includes(v) ? v : '';
+    }
+    if ('fogOfWar'     in patch) s.fogOfWar     = !!patch.fogOfWar;
     broadcast(room);
   });
 
@@ -491,6 +500,16 @@ io.on('connection', (socket) => {
     }
     room.actualJokerCount = jokerRequest;
 
+    // Resolve the wild suit. Random rolls one of the four suits at game start;
+    // a fixed setting copies through. The result is broadcast to all clients.
+    if (room.settings.wildSuit === 'random') {
+      room.actualWildSuit = SUITS[Math.floor(Math.random() * SUITS.length)];
+    } else if (SUITS.includes(room.settings.wildSuit)) {
+      room.actualWildSuit = room.settings.wildSuit;
+    } else {
+      room.actualWildSuit = '';
+    }
+
     if (room.settings.liarsBar) {
       startLiarsBarRound(room);
     } else {
@@ -513,6 +532,9 @@ io.on('connection', (socket) => {
     room.log.push(`Game started - seating: ${seating}.`);
     const mods = describeActiveSettings(room.settings);
     if (mods.length) room.log.push(`Modifiers active: ${mods.join(', ')}.`);
+    if (room.actualWildSuit) {
+      room.log.push(`Wild Suit this game: ${room.actualWildSuit}.`);
+    }
     if (room.settings.liarsBar) room.log.push(`#1 ${room.players[0].name} starts.`);
     else room.log.push(`#1 ${room.players[0].name} chooses the first Target Rank and starts.`);
     if (checkInstantLoss(room)) { broadcast(room); return; }
@@ -584,7 +606,14 @@ io.on('connection', (socket) => {
     if (room.lastPlayedCards.length === 0) return emitError('Nothing to challenge.');
     const lastPlayer = room.players.find(p => p.id === room.lastPlayerId);
     const lastCards = room.lastPlayedCards;
-    const wasLie = lastCards.some(c => c.rank !== room.targetRank && c.rank !== 'JOKER');
+    // A card is truthful if its rank matches the target, OR it's a Joker, OR
+    // its suit is the active Wild Suit.
+    const wildSuit = room.actualWildSuit;
+    const wasLie = lastCards.some(c =>
+      c.rank !== room.targetRank &&
+      c.rank !== 'JOKER' &&
+      (!wildSuit || c.suit !== wildSuit)
+    );
 
     io.to(room.id).emit('reveal', {
       cards: lastCards,
@@ -697,6 +726,7 @@ io.on('connection', (socket) => {
     });
     clearPile(room);
     room.actualJokerCount = 0;
+    room.actualWildSuit = '';
     room.log.push('Host ended the game. Back to the waiting room.');
     broadcast(room);
   });
@@ -719,6 +749,7 @@ io.on('connection', (socket) => {
     });
     clearPile(room);
     room.actualJokerCount = 0;
+    room.actualWildSuit = '';
     const dropped = room.players.filter(p => !p.connected);
     dropped.forEach(p => {
       if (p.removalTimer) { clearTimeout(p.removalTimer); p.removalTimer = null; }
