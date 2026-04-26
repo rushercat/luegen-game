@@ -28,14 +28,16 @@ const RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 const SUITS = ['H', 'D', 'C', 'S'];
 const FOUR_OF_KIND_MS = 15000;
 
-const LIARS_BAR_RANKS = ['J', 'Q', 'K', 'A'];
-const LIARS_BAR_SUITS = SUITS;        // H/D/C/S
-const LIARS_BAR_JOKERS = 2;           // 2 wild cards
-const LIARS_BAR_GUN_CHAMBERS = 6;     // each player's revolver
+const LIARS_BAR_RANKS = ['J', 'Q', 'K', 'A'];           // 16 face cards
+const LIARS_BAR_SUITS = SUITS;
+const LIARS_BAR_CARDS_PER_PLAYER = 5;
+const LIARS_BAR_FACE_DECK_SIZE = LIARS_BAR_RANKS.length * LIARS_BAR_SUITS.length; // 16
+const LIARS_BAR_GUN_CHAMBERS = 6;
 
-// How long a disconnected lobby player is kept around so a quick refresh works.
+const JOKER_SLIDER_MAX = 10;
+const JOKER_RANDOM_MAX = 5;     // when "Random Jokers" is on, server rolls 0..5
+
 const LOBBY_GRACE_MS = 60 * 1000;
-// How long we keep a fully-empty room around (in case everyone reconnects).
 const EMPTY_ROOM_GRACE_MS = 5 * 60 * 1000;
 
 // ---------- Helpers ----------
@@ -43,22 +45,40 @@ function newPlayerId() {
   return crypto.randomBytes(8).toString('hex');
 }
 
+function jokerCard(idx) {
+  return { rank: 'JOKER', suit: '*', id: 'JK' + (idx + 1) };
+}
+
+// 52-card deck for classic mode.
 function createDeck() {
   const deck = [];
   for (const r of RANKS) for (const s of SUITS) deck.push({ rank: r, suit: s, id: r + s });
   return deck;
 }
 
-// Liar's Bar deck: J/Q/K/A in 4 suits + 2 jokers.
-function createLiarsBarDeck() {
+// 16 face cards for Liar's Bar.
+function createLiarsBarFaceDeck() {
   const deck = [];
   for (const r of LIARS_BAR_RANKS) for (const s of LIARS_BAR_SUITS) {
     deck.push({ rank: r, suit: s, id: r + s });
   }
-  for (let i = 0; i < LIARS_BAR_JOKERS; i++) {
-    deck.push({ rank: 'JOKER', suit: '*', id: 'JK' + (i + 1) });
-  }
   return deck;
+}
+
+// Build a Liar's Bar deck of EXACTLY (numAlive * 5) cards.
+// jokerCountRequest is the host-set joker count (or random pick). The deck
+// auto-pads with extra jokers when the player count is too high to fill from
+// the 16 distinct face cards alone.
+function buildLiarsBarDeck(numAlive, jokerCountRequest) {
+  const total = numAlive * LIARS_BAR_CARDS_PER_PLAYER;
+  const minJokersForDeckSize = Math.max(0, total - LIARS_BAR_FACE_DECK_SIZE);
+  let jokers = Math.max(jokerCountRequest | 0, minJokersForDeckSize);
+  jokers = Math.min(jokers, total);
+  const faceCount = total - jokers;
+  const facePool = shuffle(createLiarsBarFaceDeck()).slice(0, faceCount);
+  const jokerCards = [];
+  for (let i = 0; i < jokers; i++) jokerCards.push(jokerCard(i));
+  return { deck: shuffle([...facePool, ...jokerCards]), jokers, total };
 }
 
 function shuffle(arr) {
@@ -94,6 +114,8 @@ function describeActiveSettings(s) {
   if (s.cardsRemoved > 0) out.push(`Lean Deck (-${s.cardsRemoved})`);
   if (s.pileStart > 0)    out.push(`Loaded Pile (+${s.pileStart})`);
   if (s.maxCards < 3)     out.push(`Trickle Mode (max ${s.maxCards})`);
+  if (s.jokerRandom)      out.push('Random Jokers (?)');
+  else if (s.jokerCount > 0) out.push(`Jokers (${s.jokerCount})`);
   if (s.mysteryHands)     out.push('Mystery Hands');
   if (s.shuffleSeats)     out.push('Shuffle Seats');
   return out;
@@ -106,7 +128,9 @@ function defaultSettings() {
     maxCards:     3,
     mysteryHands: false,
     liarsBar:     false,
-    shuffleSeats: false
+    shuffleSeats: false,
+    jokerCount:   0,
+    jokerRandom:  false
   };
 }
 
@@ -132,16 +156,20 @@ function newRoom(id) {
     losers: [],
     hostId: null,
     emptyTimer: null,
-    settings: defaultSettings()
+    settings: defaultSettings(),
+    actualJokerCount: 0   // resolved at startGame; revealed only when allowed
   };
 }
 
 function publicState(room) {
   const hideCounts = room.settings && room.settings.mysteryHands && room.started && !room.gameOver;
+  // Hide actual joker count from clients while a "Random Jokers" game is live.
+  const hideJokerCount = room.started && !room.gameOver && !!room.settings.jokerRandom;
   return {
     id: room.id,
     hostId: room.hostId,
     settings: room.settings,
+    actualJokerCount: hideJokerCount ? null : room.actualJokerCount,
     players: room.players.map((p, idx) => ({
       id: p.id,
       name: p.name,
@@ -174,7 +202,6 @@ function broadcast(room) {
   }
 }
 
-// Skip disconnected, eliminated, no-card and skipped players.
 function findNextActiveIdx(room, fromIdx) {
   const n = room.players.length;
   let idx = fromIdx;
@@ -195,7 +222,6 @@ function findNextActiveIdx(room, fromIdx) {
 }
 
 function checkInstantLoss(room) {
-  // 4-Jacks rule doesn't apply in Liar's Bar mode.
   if (room.settings && room.settings.liarsBar) return false;
   for (const p of room.players) {
     if (p.hand.filter(c => c.rank === 'J').length === 4) {
@@ -211,7 +237,6 @@ function checkInstantLoss(room) {
 
 function checkLastPlayerStanding(room) {
   if (room.gameOver) return;
-  // Liar's Bar has its own win condition (last alive standing).
   if (room.settings && room.settings.liarsBar) {
     const aliveCount = room.players.filter(p => p.alive !== false).length;
     if (aliveCount <= 1 && room.players.length > 1) {
@@ -220,6 +245,10 @@ function checkLastPlayerStanding(room) {
       room.winners = survivor ? [survivor.id] : [];
       room.losers = room.players.filter(p => p.alive === false).map(p => p.id);
       if (survivor) room.log.push(`${survivor.name} is the last one standing and wins!`);
+      // Reveal the joker count once the game ends.
+      if (room.settings.jokerRandom) {
+        room.log.push(`Random Jokers reveal: there were ${room.actualJokerCount} joker(s) in the deck.`);
+      }
     }
     return;
   }
@@ -235,6 +264,9 @@ function checkLastPlayerStanding(room) {
     } else {
       const names = withCards.map(p => p.name).join(' and ');
       room.log.push(`Only ${names} are left with cards - both lose!`);
+    }
+    if (room.settings.jokerRandom) {
+      room.log.push(`Random Jokers reveal: there were ${room.actualJokerCount} joker(s) in the deck.`);
     }
   }
 }
@@ -274,8 +306,6 @@ function pickRandomTargetRank() {
   return LIARS_BAR_RANKS[Math.floor(Math.random() * LIARS_BAR_RANKS.length)];
 }
 
-// Russian roulette pull. Each player has their own revolver; the bullet stays
-// in the gun, so chances climb 1/6 -> 1/5 -> ... -> 1/1.
 function pullTrigger(player) {
   const before = player.chambers || LIARS_BAR_GUN_CHAMBERS;
   if (before <= 0) {
@@ -290,20 +320,20 @@ function pullTrigger(player) {
   return { died, chambersBefore: before, chambersAfter: after, prob };
 }
 
-// Deal a fresh round in Liar's Bar mode. Alive players get hands, dead ones
-// get empty hands. A new target rank is auto-picked.
 function startLiarsBarRound(room) {
   const alive = room.players.filter(p => p.alive !== false);
-  const deck = shuffle(createLiarsBarDeck());
+  const { deck, jokers } = buildLiarsBarDeck(alive.length, room.actualJokerCount);
+  // Each round may need more auto-jokers than the original game-start request
+  // when alive count exceeds the face deck size; re-record the effective count.
+  room.actualJokerCount = jokers;
   const hands = dealCards(deck, alive.length);
   alive.forEach((p, i) => { p.hand = hands[i]; p.isSkipped = false; });
   room.players.filter(p => p.alive === false).forEach(p => { p.hand = []; });
   clearPile(room);
   room.targetRank = pickRandomTargetRank();
-  room.log.push(`New round dealt (${alive.length} alive). Target rank: ${room.targetRank}.`);
+  room.log.push(`New round dealt (${alive.length} alive, ${alive.length * LIARS_BAR_CARDS_PER_PLAYER} cards). Target rank: ${room.targetRank}.`);
 }
 
-// Reshuffle player seats at end of round, preserving the ID of the next starter.
 function applyShuffleSeatsPreservingStarter(room, starterId) {
   shuffle(room.players);
   const idx = room.players.findIndex(p => p.id === starterId);
@@ -343,23 +373,17 @@ io.on('connection', (socket) => {
     if (!room) return socket.emit('reconnectFailed', { reason: 'Room no longer exists.' });
     const player = room.players.find(p => p.id === playerId);
     if (!player) return socket.emit('reconnectFailed', { reason: 'You are no longer in that room.' });
-
     if (player.removalTimer) {
       clearTimeout(player.removalTimer);
       player.removalTimer = null;
     }
     cancelEmptyRoomCleanup(room);
-
     const wasOffline = !player.connected;
     player.socketId = socket.id;
     player.connected = true;
     socket.join(room.id);
     currentRoomId = room.id;
-
-    if (wasOffline) {
-      room.log.push(`${player.name} reconnected.`);
-    }
-
+    if (wasOffline) room.log.push(`${player.name} reconnected.`);
     socket.emit('joined', { roomId: room.id, playerId: player.id });
     broadcast(room);
   });
@@ -396,6 +420,8 @@ io.on('connection', (socket) => {
     if ('mysteryHands' in patch) s.mysteryHands = !!patch.mysteryHands;
     if ('liarsBar'     in patch) s.liarsBar     = !!patch.liarsBar;
     if ('shuffleSeats' in patch) s.shuffleSeats = !!patch.shuffleSeats;
+    if ('jokerCount'   in patch) s.jokerCount   = clampInt(patch.jokerCount, 0, JOKER_SLIDER_MAX);
+    if ('jokerRandom'  in patch) s.jokerRandom  = !!patch.jokerRandom;
     broadcast(room);
   });
 
@@ -407,7 +433,6 @@ io.on('connection', (socket) => {
     if (room.players.length < 2) return emitError('Need at least 2 players.');
     if (room.started) return;
 
-    // Reset per-game state for everyone.
     room.players.forEach(p => {
       p.alive = true;
       p.chambers = LIARS_BAR_GUN_CHAMBERS;
@@ -423,11 +448,24 @@ io.on('connection', (socket) => {
     room.targetRank = null;
     clearPile(room);
 
+    // Resolve the joker count once for the whole game. With "Random Jokers"
+    // on, the value is rolled here and never told to anyone until game over.
+    let jokerRequest;
+    if (room.settings.jokerRandom) {
+      jokerRequest = Math.floor(Math.random() * (JOKER_RANDOM_MAX + 1)); // 0..5
+    } else {
+      jokerRequest = room.settings.jokerCount | 0;
+    }
+    room.actualJokerCount = jokerRequest;
+
     if (room.settings.liarsBar) {
-      // Liar's Bar: small deck, auto-target, fresh deal each round.
       startLiarsBarRound(room);
     } else {
-      let deck = shuffle(createDeck());
+      // Classic mode: 52-card deck + N jokers, then optional Lean Deck and
+      // Loaded Pile (which can trim/seed the combined deck).
+      let deck = createDeck();
+      for (let i = 0; i < jokerRequest; i++) deck.push(jokerCard(i));
+      deck = shuffle(deck);
       const cardsRemoved = room.settings.cardsRemoved | 0;
       if (cardsRemoved > 0) deck.splice(0, Math.min(cardsRemoved, deck.length - room.players.length));
       const pileSeed = Math.min(room.settings.pileStart | 0, Math.max(0, deck.length - room.players.length));
@@ -441,11 +479,8 @@ io.on('connection', (socket) => {
     room.log.push(`Game started - seating: ${seating}.`);
     const mods = describeActiveSettings(room.settings);
     if (mods.length) room.log.push(`Modifiers active: ${mods.join(', ')}.`);
-    if (room.settings.liarsBar) {
-      room.log.push(`#1 ${room.players[0].name} starts.`);
-    } else {
-      room.log.push(`#1 ${room.players[0].name} chooses the first Target Rank and starts.`);
-    }
+    if (room.settings.liarsBar) room.log.push(`#1 ${room.players[0].name} starts.`);
+    else room.log.push(`#1 ${room.players[0].name} chooses the first Target Rank and starts.`);
     if (checkInstantLoss(room)) { broadcast(room); return; }
     broadcast(room);
   });
@@ -495,17 +530,12 @@ io.on('connection', (socket) => {
     room.lastPlayCount = playedCards.length;
     room.lastPlayerId = player.id;
     room.log.push(`${player.name} plays ${playedCards.length} card(s) claiming ${room.targetRank}.`);
-    // In classic mode emptying your hand wins; in Liar's Bar that doesn't apply
-    // (you redeal each round, so an empty hand is just "no cards left to play"
-    // and the round will end on the next LIAR / hand-out).
     if (!room.settings.liarsBar && player.hand.length === 0) {
       room.log.push(`${player.name} emptied their hand and wins! Play continues without them (they can still be called LIAR on this play).`);
     }
-
     const nextIdx = findNextActiveIdx(room, room.currentTurnIdx);
     room.currentTurnIdx = nextIdx;
     room.canChallengeId = room.players[nextIdx].id;
-
     if (checkInstantLoss(room)) { broadcast(room); return; }
     checkLastPlayerStanding(room);
     broadcast(room);
@@ -518,10 +548,9 @@ io.on('connection', (socket) => {
     if (!challenger) return;
     if (room.canChallengeId !== challenger.id) return emitError('You cannot challenge right now.');
     if (room.lastPlayedCards.length === 0) return emitError('Nothing to challenge.');
-
     const lastPlayer = room.players.find(p => p.id === room.lastPlayerId);
     const lastCards = room.lastPlayedCards;
-    // Jokers count as the target rank (wild) — only present in Liar's Bar mode.
+    // Jokers always count as the target rank (wild).
     const wasLie = lastCards.some(c => c.rank !== room.targetRank && c.rank !== 'JOKER');
 
     io.to(room.id).emit('reveal', {
@@ -533,7 +562,6 @@ io.on('connection', (socket) => {
     });
 
     if (room.settings.liarsBar) {
-      // Liar's Bar: loser of the LIAR exchange pulls their own revolver.
       const loser = wasLie ? lastPlayer : challenger;
       const winner = wasLie ? challenger : lastPlayer;
       const result = pullTrigger(loser);
@@ -545,33 +573,24 @@ io.on('connection', (socket) => {
         chambersAfter: result.chambersAfter,
         prob: result.prob
       });
-      if (wasLie) {
-        room.log.push(`${challenger.name} called LIAR - ${lastPlayer.name} was lying.`);
-      } else {
-        room.log.push(`${challenger.name} wrongly accused ${lastPlayer.name}.`);
-      }
+      if (wasLie) room.log.push(`${challenger.name} called LIAR - ${lastPlayer.name} was lying.`);
+      else        room.log.push(`${challenger.name} wrongly accused ${lastPlayer.name}.`);
       if (result.died) {
-        room.log.push(`BANG! ${loser.name}'s gun fired (${result.chambersBefore === 1 ? '100%' : '1/' + result.chambersBefore}). ${loser.name} is eliminated.`);
+        room.log.push(`BANG! ${loser.name}'s gun fired (was 1/${result.chambersBefore}). ${loser.name} is eliminated.`);
       } else {
-        room.log.push(`*click* ${loser.name} survives (was 1/${result.chambersBefore}; now 1/${Math.max(1, result.chambersAfter)} next time).`);
+        room.log.push(`*click* ${loser.name} survives (was 1/${result.chambersBefore}; next time 1/${Math.max(1, result.chambersAfter)}).`);
       }
-
       checkLastPlayerStanding(room);
       if (room.gameOver) { broadcast(room); return; }
-
-      // Set up next round: winner of the exchange starts (or fall back if dead).
       const starter = winner.alive !== false ? winner : room.players.find(p => p.alive !== false);
       startLiarsBarRound(room);
       const startIdx = room.players.findIndex(p => p.id === starter.id);
       room.currentTurnIdx = startIdx >= 0 ? startIdx : 0;
-      if (room.settings.shuffleSeats) {
-        applyShuffleSeatsPreservingStarter(room, starter.id);
-      }
+      if (room.settings.shuffleSeats) applyShuffleSeatsPreservingStarter(room, starter.id);
       broadcast(room);
       return;
     }
 
-    // ---- Classic mode (no Liar's Bar) ----
     let starterId = null;
     if (wasLie) {
       const takenCount = room.pile.length;
@@ -591,12 +610,10 @@ io.on('connection', (socket) => {
       starterId = room.players[room.currentTurnIdx].id;
       room.log.push(`${challenger.name} falsely accused ${lastPlayer.name}, takes the pile (${takenCount} cards) and is skipped - ${room.players[room.currentTurnIdx].name} starts the new round.`);
     }
-
     if (room.settings.shuffleSeats && starterId) {
       applyShuffleSeatsPreservingStarter(room, starterId);
       room.log.push('Seats reshuffled for the next round.');
     }
-
     if (checkInstantLoss(room)) { broadcast(room); return; }
     checkLastPlayerStanding(room);
     broadcast(room);
@@ -646,6 +663,7 @@ io.on('connection', (socket) => {
       p.chambers = LIARS_BAR_GUN_CHAMBERS;
     });
     clearPile(room);
+    room.actualJokerCount = 0;
     room.log.push('Host ended the game. Back to the waiting room.');
     broadcast(room);
   });
@@ -667,6 +685,7 @@ io.on('connection', (socket) => {
       p.chambers = LIARS_BAR_GUN_CHAMBERS;
     });
     clearPile(room);
+    room.actualJokerCount = 0;
     const dropped = room.players.filter(p => !p.connected);
     dropped.forEach(p => {
       if (p.removalTimer) { clearTimeout(p.removalTimer); p.removalTimer = null; }
@@ -723,10 +742,7 @@ io.on('connection', (socket) => {
     room.players = room.players.filter(p => p.id !== player.id);
     socket.leave(room.id);
     currentRoomId = null;
-    if (room.players.length === 0) {
-      delete rooms[room.id];
-      return;
-    }
+    if (room.players.length === 0) { delete rooms[room.id]; return; }
     if (wasHost) {
       const newHost = room.players.find(p => p.connected) || room.players[0];
       room.hostId = newHost.id;
@@ -756,7 +772,6 @@ io.on('connection', (socket) => {
     if (!player) return;
     player.connected = false;
     player.socketId = null;
-
     if (!room.started) {
       room.log.push(`${player.name} disconnected (waiting for them to come back...).`);
       if (room.hostId === player.id) {
@@ -773,13 +788,8 @@ io.on('connection', (socket) => {
         if (!p || p.connected) return;
         r.players = r.players.filter(x => x.id !== playerIdSnapshot);
         r.log.push(`${p.name} did not return - removed from the lobby.`);
-        if (r.hostId === playerIdSnapshot && r.players.length > 0) {
-          r.hostId = r.players[0].id;
-        }
-        if (r.players.length === 0) {
-          delete rooms[r.id];
-          return;
-        }
+        if (r.hostId === playerIdSnapshot && r.players.length > 0) r.hostId = r.players[0].id;
+        if (r.players.length === 0) { delete rooms[r.id]; return; }
         broadcast(r);
       }, LOBBY_GRACE_MS);
     } else {
@@ -799,11 +809,7 @@ io.on('connection', (socket) => {
         room.currentTurnIdx = newIdx;
       }
     }
-
-    if (!room.players.some(p => p.connected)) {
-      scheduleEmptyRoomCleanup(room);
-    }
-
+    if (!room.players.some(p => p.connected)) scheduleEmptyRoomCleanup(room);
     broadcast(room);
   });
 });

@@ -100,7 +100,6 @@
 
     <div class="space-y-3">
 
-      <!-- Lean Deck -->
       <div class="flex items-center gap-3">
         <div class="flex-1">
           <div class="font-bold text-sm">Lean Deck</div>
@@ -110,7 +109,6 @@
         <span id="modCardsRemovedVal" class="font-mono text-sm w-8 text-right">0</span>
       </div>
 
-      <!-- Loaded Pile -->
       <div class="flex items-center gap-3">
         <div class="flex-1">
           <div class="font-bold text-sm">Loaded Pile</div>
@@ -120,7 +118,6 @@
         <span id="modPileStartVal" class="font-mono text-sm w-8 text-right">0</span>
       </div>
 
-      <!-- Trickle Mode -->
       <div class="flex items-center gap-3">
         <div class="flex-1">
           <div class="font-bold text-sm">Trickle Mode</div>
@@ -130,7 +127,22 @@
         <span id="modMaxCardsVal" class="font-mono text-sm w-8 text-right">3</span>
       </div>
 
-      <!-- Toggles -->
+      <div class="flex items-center gap-3">
+        <div class="flex-1">
+          <div class="font-bold text-sm">Jokers</div>
+          <div class="text-xs text-white/60">Wild cards added to the deck — they always count as the target rank. In Liar's Bar mode, jokers also auto-scale up so every player gets exactly 5 cards.</div>
+        </div>
+        <input id="modJokerCount" type="range" min="0" max="10" value="0" class="w-32 accent-yellow-400 disabled:opacity-40" />
+        <span id="modJokerCountVal" class="font-mono text-sm w-8 text-right">0</span>
+      </div>
+      <label class="flex items-center gap-3 cursor-pointer pl-1 -mt-2">
+        <input id="modJokerRandom" type="checkbox" class="accent-yellow-400 w-4 h-4 disabled:opacity-40" />
+        <div class="flex-1">
+          <div class="font-bold text-sm">Random Jokers</div>
+          <div class="text-xs text-white/60">Override the slider with 0–5 random jokers picked at game start — even the host won't know how many until the game ends.</div>
+        </div>
+      </label>
+
       <label class="flex items-center gap-3 cursor-pointer">
         <input id="modMysteryHands" type="checkbox" class="accent-yellow-400 w-4 h-4 disabled:opacity-40" />
         <div class="flex-1">
@@ -143,7 +155,7 @@
         <input id="modLiarsBar" type="checkbox" class="accent-yellow-400 w-4 h-4 disabled:opacity-40" />
         <div class="flex-1">
           <div class="font-bold text-sm">Liar's Bar Mode</div>
-          <div class="text-xs text-white/60">Small deck (J/Q/K/A + 2 jokers, jokers wild). Target rank is auto-picked. Loser of each LIAR pulls their own revolver — 1/6, 1/5, 1/4, 1/3, 1/2, 1/1. Cards re-dealt every round. Last alive wins.</div>
+          <div class="text-xs text-white/60">Small deck (J/Q/K/A face cards + jokers, jokers wild). Each player gets exactly 5 cards. Target rank is auto-picked. Loser of each LIAR pulls their own revolver — 1/6, 1/5, 1/4, 1/3, 1/2, 1/1. Cards re-dealt every round. Last alive wins.</div>
         </div>
       </label>
 
@@ -164,13 +176,10 @@
   <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 max-w-7xl mx-auto">
 
     <div class="lg:col-span-9">
-      <!-- Active modifiers (chips) -->
       <div id="activeMods" class="flex flex-wrap gap-1 justify-center mb-3 text-xs"></div>
 
-      <!-- Opponents -->
       <div id="opponents" class="flex flex-wrap gap-3 justify-center mb-6"></div>
 
-      <!-- Center area: target / pile / reveal -->
       <div class="bg-black/30 rounded-2xl p-6 text-center border border-white/10">
         <div class="text-xs uppercase tracking-widest text-yellow-300">Current Target Rank</div>
         <div id="targetRank" class="text-7xl font-extrabold my-2">—</div>
@@ -179,12 +188,10 @@
         <div id="revealArea" class="mt-4 flex flex-wrap justify-center gap-2 min-h-[100px]"></div>
       </div>
 
-      <!-- Turn indicator -->
       <div class="text-center mt-4">
         <span id="turnIndicator" class="inline-block bg-yellow-500 text-black px-5 py-2 rounded-full font-bold pulse-ring"></span>
       </div>
 
-      <!-- Player hand -->
       <div class="mt-6">
         <div class="flex items-center justify-between mb-2 text-sm text-emerald-200">
           <span>Your Hand (<span id="handCount">0</span>) — click to select up to <span id="handMax">3</span></span>
@@ -193,7 +200,6 @@
         <div id="hand" class="flex flex-wrap gap-2 justify-center"></div>
       </div>
 
-      <!-- Actions -->
       <div class="mt-5 flex flex-col items-center gap-3">
         <div id="rankPicker" class="hidden w-full">
           <div class="text-xs text-emerald-200 mb-2 text-center">Select 1–3 cards, then click the rank you're claiming:</div>
@@ -207,7 +213,6 @@
       </div>
     </div>
 
-    <!-- Sidebar: log + chat -->
     <div class="lg:col-span-3 flex flex-col gap-4">
       <div class="bg-black/40 p-4 rounded-xl">
         <h3 class="font-bold mb-2 text-emerald-200">Game Log</h3>
@@ -223,7 +228,6 @@
   </div>
 </div>
 
-<!-- ============ GAME OVER ============ -->
 <div id="gameOver" class="hidden fixed inset-0 bg-black/80 backdrop-blur flex items-center justify-center z-50 p-4">
   <div class="bg-gradient-to-br from-purple-700 via-pink-600 to-rose-600 p-10 rounded-2xl text-center max-w-md shadow-2xl">
     <h2 id="gameOverTitle" class="text-5xl font-extrabold mb-4">Game Over!</h2>

@@ -26,7 +26,8 @@ let modSyncing = false;
 
 const DEFAULT_SETTINGS = {
   cardsRemoved: 0, pileStart: 0, maxCards: 3,
-  mysteryHands: false, liarsBar: false, shuffleSeats: false
+  mysteryHands: false, liarsBar: false, shuffleSeats: false,
+  jokerCount: 0, jokerRandom: false
 };
 
 const $ = (id) => document.getElementById(id);
@@ -204,8 +205,7 @@ socket.on('reveal', ({ cards, claimed, wasLie, challengerName, lastPlayerName })
   setTimeout(() => { if (rev.firstChild && rev.textContent.includes(claimed)) rev.innerHTML = ''; }, 4000);
 });
 
-// Liar's Bar gun pull animation: brief flash showing what happened.
-socket.on('gunPull', ({ playerName, died, chambersBefore, chambersAfter, prob }) => {
+socket.on('gunPull', ({ playerName, died, chambersBefore, chambersAfter }) => {
   const overlay = document.createElement('div');
   overlay.className = 'fixed inset-0 z-40 flex items-center justify-center pointer-events-none';
   const probStr = chambersBefore > 0 ? `1 / ${chambersBefore}` : 'guaranteed';
@@ -257,9 +257,11 @@ const MOD_FIELDS = [
   { key: 'cardsRemoved', input: 'modCardsRemoved', label: 'modCardsRemovedVal', kind: 'range' },
   { key: 'pileStart',    input: 'modPileStart',    label: 'modPileStartVal',    kind: 'range' },
   { key: 'maxCards',     input: 'modMaxCards',     label: 'modMaxCardsVal',     kind: 'range' },
+  { key: 'jokerCount',   input: 'modJokerCount',   label: 'modJokerCountVal',   kind: 'range' },
   { key: 'mysteryHands', input: 'modMysteryHands', kind: 'check' },
   { key: 'liarsBar',     input: 'modLiarsBar',     kind: 'check' },
-  { key: 'shuffleSeats', input: 'modShuffleSeats', kind: 'check' }
+  { key: 'shuffleSeats', input: 'modShuffleSeats', kind: 'check' },
+  { key: 'jokerRandom',  input: 'modJokerRandom',  kind: 'check' }
 ];
 const _modPending = {};
 function emitModChange(key, value) {
@@ -284,6 +286,12 @@ function applySettingsToPanel(state) {
       inp.checked = !!settings[f.key];
     }
   }
+  // The joker slider is overridden when "Random Jokers" is on — gray it out
+  // and show "?" so the host can't tell what number is in play.
+  const jokerSlider = $('modJokerCount');
+  const jokerLabel  = $('modJokerCountVal');
+  if (jokerSlider) jokerSlider.disabled = !isHost || !!settings.jokerRandom;
+  if (jokerLabel)  jokerLabel.textContent = settings.jokerRandom ? '?' : String(settings.jokerCount || 0);
   modSyncing = false;
   const hint = $('modsHint');
   if (hint) {
@@ -351,13 +359,19 @@ function renderWaitingRoom(state) {
     : 'Waiting for the host to start the game...';
 }
 
-function describeActiveSettingsClient(s) {
+function describeActiveSettingsClient(s, state) {
   if (!s) return [];
   const out = [];
   if (s.liarsBar)         out.push("Liar's Bar Mode");
   if (s.cardsRemoved > 0) out.push(`Lean Deck -${s.cardsRemoved}`);
   if (s.pileStart > 0)    out.push(`Loaded Pile +${s.pileStart}`);
   if (s.maxCards < 3)     out.push(`Trickle (max ${s.maxCards})`);
+  if (s.jokerRandom) {
+    const known = state && typeof state.actualJokerCount === 'number';
+    out.push(known ? `Jokers (${state.actualJokerCount})` : 'Jokers (?)');
+  } else if (s.jokerCount > 0) {
+    out.push(`Jokers (${s.jokerCount})`);
+  }
   if (s.mysteryHands)     out.push('Mystery Hands');
   if (s.shuffleSeats)     out.push('Shuffle Seats');
   return out;
@@ -366,14 +380,13 @@ function describeActiveSettingsClient(s) {
 function renderActiveMods(state) {
   const el = $('activeMods');
   if (!el) return;
-  const mods = describeActiveSettingsClient(state && state.settings);
+  const mods = describeActiveSettingsClient(state && state.settings, state);
   if (!mods.length) { el.innerHTML = ''; return; }
   el.innerHTML = mods.map(m =>
     `<span class="bg-yellow-400/20 border border-yellow-400/40 text-yellow-200 px-2 py-0.5 rounded-full">${escapeHtml(m)}</span>`
   ).join('');
 }
 
-// Render a player's gun: 6 chambers, with `chambers` empty / spent shown.
 function renderGunDots(chambers) {
   const total = 6;
   const remaining = Math.max(0, Math.min(total, chambers || 0));
@@ -389,7 +402,6 @@ function renderGunDots(chambers) {
 function renderGame(state) {
   renderActiveMods(state);
   const liarsBar = !!(state.settings && state.settings.liarsBar);
-
   const opp = $('opponents');
   opp.innerHTML = '';
   state.players.forEach((p, idx) => {
@@ -402,7 +414,6 @@ function renderGame(state) {
     else if (p.cardCount === null || p.cardCount === undefined) displayCount = '?';
     else displayCount = p.cardCount;
     const isOut = !liarsBar && (typeof displayCount === 'number') ? displayCount === 0 : false;
-
     const div = document.createElement('div');
     let borderCls;
     if (isDead)        borderCls = 'border-red-500/70 ring-2 ring-red-500/40';
@@ -411,17 +422,10 @@ function renderGame(state) {
     else if (isMe)     borderCls = 'border-emerald-400';
     else               borderCls = 'border-white/10';
     div.className = `relative bg-black/40 p-3 rounded-xl text-center min-w-[120px] border ${borderCls} ${(isOut || isDead) ? 'opacity-70' : ''}`;
-
-    const countLabel = isDead
-      ? 'eliminated'
-      : (isOut
-          ? 'finished'
-          : (typeof displayCount === 'number'
-              ? `${displayCount} card${displayCount === 1 ? '' : 's'}`
-              : '? cards'));
-
+    const countLabel = isDead ? 'eliminated'
+      : (isOut ? 'finished'
+        : (typeof displayCount === 'number' ? `${displayCount} card${displayCount === 1 ? '' : 's'}` : '? cards'));
     const gunHtml = liarsBar ? `<div class="mt-1 flex justify-center">${renderGunDots(p.chambers)}</div>` : '';
-
     div.innerHTML = `
       ${p.seatNumber ? `<div class="absolute -top-2 -left-2 bg-yellow-400 text-black w-7 h-7 rounded-full flex items-center justify-center font-extrabold text-sm shadow">${p.seatNumber}</div>` : ''}
       ${isMe ? '<div class="absolute -top-2 -right-2 bg-emerald-400 text-black px-2 py-0.5 rounded-full text-[10px] font-extrabold shadow">YOU</div>' : ''}
@@ -462,7 +466,6 @@ function renderGame(state) {
   const maxCards = (state.settings && state.settings.maxCards) || 3;
   const validSelection = selectedCards.size >= 1 && selectedCards.size <= maxCards;
 
-  // In Liar's Bar mode the rank picker never appears (target is auto-set).
   if (liarsBar) {
     rankPicker.classList.add('hidden');
     if (isMyTurn && myAlive) {
@@ -556,7 +559,7 @@ function updateFourBtn() {
   if (liarsBar) { btn.classList.add('hidden'); return; }
   const counts = {};
   myHand.forEach(c => counts[c.rank] = (counts[c.rank] || 0) + 1);
-  const fours = Object.entries(counts).filter(([r, c]) => c === 4 && r !== 'J').map(([r]) => r);
+  const fours = Object.entries(counts).filter(([r, c]) => c === 4 && r !== 'J' && r !== 'JOKER').map(([r]) => r);
   if (fours.length > 0) {
     btn.classList.remove('hidden');
     btn.textContent = `Discard 4 ${fours[0]}s`;
