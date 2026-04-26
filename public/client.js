@@ -1,5 +1,12 @@
 // client.js — Lügen frontend
-const socket = io();
+// We tweak socket.io's reconnection so a brief network blip is forgiving.
+const socket = io({
+  reconnection: true,
+  reconnectionAttempts: Infinity,
+  reconnectionDelay: 500,
+  reconnectionDelayMax: 4000,
+  timeout: 10000
+});
 
 const RANKS = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
 // Ranks that can be CLAIMED as the target for a play. Jacks are excluded —
@@ -8,14 +15,75 @@ const TARGET_RANKS = RANKS.filter(r => r !== 'J');
 const SUIT_SYMBOLS = { H: '♥', D: '♦', C: '♣', S: '♠' };
 const SUIT_COLORS  = { H: 'text-red-600', D: 'text-red-600', C: 'text-black', S: 'text-black' };
 
+const STORAGE_KEY = 'lugen-session';
+
 let myId = null;
 let myHand = [];
 let selectedCards = new Set();
 let roomState = null;
 let prevHandIds = new Set();   // hand IDs from the previous 'hand' event
 let newCardIds  = new Set();   // cards just added (highlighted until I next play)
+let session = loadSession();   // { roomId, playerId, name } persisted across reloads
+let attemptedResume = false;   // did we try to resume on this socket already?
 
 const $ = (id) => document.getElementById(id);
+
+// ---------- Session persistence ----------
+function loadSession() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (obj && obj.roomId && obj.playerId) return obj;
+  } catch (_) { /* ignore */ }
+  return null;
+}
+
+function saveSession(data) {
+  session = data;
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (_) { /* ignore */ }
+}
+
+function clearSession() {
+  session = null;
+  try { localStorage.removeItem(STORAGE_KEY); } catch (_) { /* ignore */ }
+}
+
+// ---------- Reconnecting overlay ----------
+function ensureOverlay() {
+  let el = document.getElementById('reconnectOverlay');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'reconnectOverlay';
+  el.className = 'hidden fixed inset-0 z-50 bg-black/70 backdrop-blur flex items-center justify-center p-4';
+  el.innerHTML = `
+    <div class="bg-gradient-to-br from-slate-800 to-slate-900 border border-yellow-400/40 px-8 py-6 rounded-2xl text-center shadow-2xl max-w-sm">
+      <div class="text-yellow-300 text-4xl mb-2">📡</div>
+      <div id="reconnectTitle" class="text-xl font-bold mb-1">Reconnecting…</div>
+      <div id="reconnectSub" class="text-sm text-emerald-200 mb-4">Trying to restore your seat.</div>
+      <div class="flex justify-center gap-2">
+        <span class="w-2 h-2 bg-yellow-300 rounded-full animate-bounce" style="animation-delay:0ms"></span>
+        <span class="w-2 h-2 bg-yellow-300 rounded-full animate-bounce" style="animation-delay:150ms"></span>
+        <span class="w-2 h-2 bg-yellow-300 rounded-full animate-bounce" style="animation-delay:300ms"></span>
+      </div>
+    </div>`;
+  document.body.appendChild(el);
+  return el;
+}
+
+function showOverlay(title, sub) {
+  const el = ensureOverlay();
+  el.classList.remove('hidden');
+  const t = document.getElementById('reconnectTitle');
+  const s = document.getElementById('reconnectSub');
+  if (t && title) t.textContent = title;
+  if (s && sub) s.textContent = sub;
+}
+
+function hideOverlay() {
+  const el = document.getElementById('reconnectOverlay');
+  if (el) el.classList.add('hidden');
+}
 
 // ---------- Lobby actions ----------
 $('createBtn').onclick = () => {
@@ -36,18 +104,76 @@ function showError(msg) {
   setTimeout(() => { if ($('errorMsg').textContent === msg) $('errorMsg').textContent = ''; }, 4000);
 }
 
-// ---------- Socket events ----------
+// ---------- Socket lifecycle ----------
+// Fires on first connect AND on every successful auto-reconnection.
+// In both cases, if we have credentials saved, ask the server to put us back
+// in our seat. The server will either reply with `joined` (success) or
+// `reconnectFailed` (room/seat gone).
+socket.on('connect', () => {
+  attemptedResume = true;
+  if (session && session.roomId && session.playerId) {
+    showOverlay('Reconnecting…', `Restoring your seat in room ${session.roomId}.`);
+    socket.emit('resumeSession', { roomId: session.roomId, playerId: session.playerId });
+  } else {
+    hideOverlay();
+  }
+});
+
+socket.on('disconnect', () => {
+  // Only show the overlay if we already had a session (otherwise the user is just on the lobby).
+  if (session && session.roomId && session.playerId) {
+    showOverlay('Connection lost', 'Trying to reconnect…');
+  }
+});
+
+// Manager-level events (give-up after all retries, attempt-counter, etc.)
+if (socket.io && typeof socket.io.on === 'function') {
+  socket.io.on('reconnect_failed', () => {
+    showOverlay('Could not reconnect', 'Please reload the page.');
+  });
+  socket.io.on('reconnect_attempt', (attempt) => {
+    if (session && session.roomId) {
+      showOverlay('Reconnecting…', `Attempt ${attempt}…`);
+    }
+  });
+}
+
+// ---------- Game socket events ----------
 socket.on('joined', ({ roomId, playerId }) => {
   myId = playerId;
+  attemptedResume = true;
+  saveSession({ roomId, playerId, name: $('playerName').value.trim() || 'Player' });
   $('lobby').classList.add('hidden');
   $('waitingRoom').classList.remove('hidden');
   $('settingsContainer').classList.remove('hidden');
   $('roomCode').textContent = roomId;
+  hideOverlay();
+});
+
+socket.on('reconnectFailed', ({ reason }) => {
+  // Stale credentials — go back to the lobby cleanly.
+  clearSession();
+  attemptedResume = true; // don't retry
+  hideOverlay();
+  myId = null;
+  myHand = [];
+  selectedCards.clear();
+  prevHandIds.clear();
+  newCardIds.clear();
+  roomState = null;
+  $('game').classList.add('hidden');
+  $('waitingRoom').classList.add('hidden');
+  $('gameOver').classList.add('hidden');
+  $('settingsContainer').classList.add('hidden');
+  $('lobby').classList.remove('hidden');
+  hideRejoinBanner();
+  if (reason) showError(reason);
 });
 
 socket.on('errorMsg', ({ message }) => showError(message));
 
 socket.on('kicked', ({ reason }) => {
+  clearSession();
   alert(reason || 'You were removed from the room.');
   location.reload();
 });
@@ -144,7 +270,7 @@ function renderWaitingRoom(state) {
     div.innerHTML = `
       <span>${escapeHtml(p.name)}${p.id === myId ? ' <span class="text-emerald-300">(you)</span>' : ''}${p.id === state.hostId ? ' 👑' : ''}</span>
       <span class="flex items-center gap-2">
-        <span class="text-xs text-emerald-200">${p.connected ? 'online' : 'offline'}</span>
+        <span class="text-xs ${p.connected ? 'text-emerald-200' : 'text-amber-300'}">${p.connected ? 'online' : 'offline'}</span>
         ${showKick ? '<button class="kickBtn bg-red-600/70 hover:bg-red-600 text-xs px-2 py-1 rounded font-bold transition">Kick</button>' : ''}
       </span>`;
     const kickBtn = div.querySelector('.kickBtn');
@@ -188,7 +314,7 @@ function renderGame(state) {
       <div class="text-sm">${isOut ? 'finished' : `${p.cardCount} card${p.cardCount === 1 ? '' : 's'}`}</div>
       ${isOut ? '<div class="text-[10px] mt-1 text-yellow-300 font-extrabold">WON!</div>' : ''}
       ${canChallenge && !isOut ? '<div class="text-[10px] mt-1 text-red-300">may challenge</div>' : ''}
-      ${!p.connected ? '<div class="text-[10px] text-gray-400">disconnected</div>' : ''}
+      ${!p.connected ? '<div class="text-[10px] text-amber-300">disconnected</div>' : ''}
     `;
     opp.appendChild(div);
   });
@@ -367,9 +493,58 @@ $('endGameBtn').onclick = () => {
 $('leaveBtn').onclick = () => {
   $('settingsMenu').classList.add('hidden');
   if (confirm('Leave this room and go back to the main lobby?')) {
+    socket.emit('leaveRoom');
+    clearSession();
     location.reload();
   }
 };
+
+// ---------- "Rejoin last room" banner on the lobby ----------
+function ensureRejoinBanner() {
+  let el = document.getElementById('rejoinBanner');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'rejoinBanner';
+  el.className = 'mt-4 bg-yellow-500/15 border border-yellow-400/40 rounded-xl p-4 flex flex-col gap-2 text-sm';
+  $('lobby').querySelector('.bg-black\\/40').after(el);
+  return el;
+}
+
+function showRejoinBanner() {
+  if (!session || !session.roomId || !session.playerId) return;
+  const el = ensureRejoinBanner();
+  el.innerHTML = `
+    <div>You were in room <b class="font-mono">${escapeHtml(session.roomId)}</b>${session.name ? ` as <b>${escapeHtml(session.name)}</b>` : ''}.</div>
+    <div class="flex gap-2">
+      <button id="rejoinBtn" class="flex-1 bg-yellow-500 hover:bg-yellow-400 text-black px-4 py-2 rounded-lg font-bold transition">Reconnect</button>
+      <button id="forgetBtn" class="bg-white/10 hover:bg-white/20 px-4 py-2 rounded-lg font-bold transition">Forget</button>
+    </div>`;
+  el.classList.remove('hidden');
+  document.getElementById('rejoinBtn').onclick = () => {
+    showOverlay('Reconnecting…', `Restoring your seat in room ${session.roomId}.`);
+    attemptedResume = true;
+    socket.emit('resumeSession', { roomId: session.roomId, playerId: session.playerId });
+  };
+  document.getElementById('forgetBtn').onclick = () => {
+    clearSession();
+    hideRejoinBanner();
+  };
+}
+
+function hideRejoinBanner() {
+  const el = document.getElementById('rejoinBanner');
+  if (el) el.remove();
+}
+
+// On page load: if we have a saved session, show the banner immediately.
+// The 'connect' handler also auto-fires resumeSession; the banner is the
+// fallback / explicit option in case the user wants to start fresh instead.
+if (session && session.roomId && session.playerId) {
+  showRejoinBanner();
+  if (session.name) {
+nput.value = session.name;
+  }
+}
 
 // ---------- Util ----------
 function escapeHtml(str) {

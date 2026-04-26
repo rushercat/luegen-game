@@ -2,6 +2,7 @@
 const express = require('express');
 const http = require('http');
 const path = require('path');
+const crypto = require('crypto');
 const { Server } = require('socket.io');
 
 const app = express();
@@ -27,7 +28,16 @@ const RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 const SUITS = ['H', 'D', 'C', 'S'];
 const FOUR_OF_KIND_MS = 15000;
 
+// How long a disconnected lobby player is kept around so a quick refresh works.
+const LOBBY_GRACE_MS = 60 * 1000;
+// How long we keep a fully-empty room around (in case everyone reconnects).
+const EMPTY_ROOM_GRACE_MS = 5 * 60 * 1000;
+
 // ---------- Helpers ----------
+function newPlayerId() {
+  return crypto.randomBytes(8).toString('hex');
+}
+
 function createDeck() {
   const deck = [];
   for (const r of RANKS) for (const s of SUITS) deck.push({ rank: r, suit: s, id: r + s });
@@ -75,7 +85,8 @@ function newRoom(id) {
     gameOver: false,
     winners: [],
     losers: [],
-    hostId: null
+    hostId: null,
+    emptyTimer: null
   };
 }
 
@@ -108,7 +119,9 @@ function publicState(room) {
 
 function broadcast(room) {
   io.to(room.id).emit('roomState', publicState(room));
-  for (const p of room.players) io.to(p.socketId).emit('hand', p.hand);
+  for (const p of room.players) {
+    if (p.socketId) io.to(p.socketId).emit('hand', p.hand);
+  }
 }
 
 function nextPlayerIdx(room, fromIdx) {
@@ -178,6 +191,29 @@ function clearPile(room) {
   room.targetRank = null;
 }
 
+function findPlayerBySocket(room, socketId) {
+  return room.players.find(p => p.socketId === socketId);
+}
+
+// Schedule deletion of a room that has no connected players. Cancels any prior
+// timer when called, so reconnection during the grace period keeps the room alive.
+function scheduleEmptyRoomCleanup(room) {
+  if (room.emptyTimer) clearTimeout(room.emptyTimer);
+  room.emptyTimer = setTimeout(() => {
+    const r = rooms[room.id];
+    if (!r) return;
+    const stillConnected = r.players.some(p => p.connected);
+    if (!stillConnected) delete rooms[r.id];
+  }, EMPTY_ROOM_GRACE_MS);
+}
+
+function cancelEmptyRoomCleanup(room) {
+  if (room.emptyTimer) {
+    clearTimeout(room.emptyTimer);
+    room.emptyTimer = null;
+  }
+}
+
 // ---------- Socket handlers ----------
 io.on('connection', (socket) => {
   let currentRoomId = null;
@@ -188,41 +224,74 @@ io.on('connection', (socket) => {
     const roomId = makeRoomId();
     const room = newRoom(roomId);
     rooms[roomId] = room;
-    addPlayer(room, socket, name);
-    room.hostId = socket.id;
+    const player = addPlayer(room, socket, name);
+    room.hostId = player.id;
     currentRoomId = roomId;
-    socket.emit('joined', { roomId, playerId: socket.id });
+    socket.emit('joined', { roomId, playerId: player.id });
     broadcast(room);
   });
 
   socket.on('joinRoom', ({ roomId, name }) => {
     const room = rooms[(roomId || '').toUpperCase()];
     if (!room) return emitError('Room not found.');
-    if (room.started) return emitError('Game already started.');
+    if (room.started) return emitError('Game already started. (If you were in this room before, click "Reconnect to last room".)');
     if (room.players.length >= 8) return emitError('Room is full (8 max).');
-    addPlayer(room, socket, name);
+    const player = addPlayer(room, socket, name);
     currentRoomId = room.id;
-    socket.emit('joined', { roomId: room.id, playerId: socket.id });
+    socket.emit('joined', { roomId: room.id, playerId: player.id });
+    broadcast(room);
+  });
+
+  // Reconnect to an existing seat after a disconnect / refresh / network blip.
+  // Identity is the (roomId, playerId) pair issued when the player first joined.
+  socket.on('resumeSession', ({ roomId, playerId }) => {
+    const room = rooms[(roomId || '').toUpperCase()];
+    if (!room) return socket.emit('reconnectFailed', { reason: 'Room no longer exists.' });
+    const player = room.players.find(p => p.id === playerId);
+    if (!player) return socket.emit('reconnectFailed', { reason: 'You are no longer in that room.' });
+
+    // Cancel any pending lobby-grace removal timer for this player.
+    if (player.removalTimer) {
+      clearTimeout(player.removalTimer);
+      player.removalTimer = null;
+    }
+    cancelEmptyRoomCleanup(room);
+
+    const wasOffline = !player.connected;
+    player.socketId = socket.id;
+    player.connected = true;
+    socket.join(room.id);
+    currentRoomId = room.id;
+
+    if (wasOffline) {
+      room.log.push(`${player.name} reconnected.`);
+    }
+
+    socket.emit('joined', { roomId: room.id, playerId: player.id });
     broadcast(room);
   });
 
   function addPlayer(room, sock, name) {
     const player = {
-      id: sock.id,
-      socketId: sock.id,
+      id: newPlayerId(),  // stable, survives socket reconnects
+      socketId: sock.id,  // current live socket
       name: (name || '').trim().slice(0, 20) || `Player${room.players.length + 1}`,
       hand: [],
       connected: true,
-      isSkipped: false
+      isSkipped: false,
+      removalTimer: null
     };
     room.players.push(player);
     sock.join(room.id);
+    cancelEmptyRoomCleanup(room);
+    return player;
   }
 
   socket.on('startGame', () => {
     const room = rooms[currentRoomId];
     if (!room) return;
-    if (room.hostId !== socket.id) return emitError('Only the host can start.');
+    const me = findPlayerBySocket(room, socket.id);
+    if (!me || room.hostId !== me.id) return emitError('Only the host can start.');
     if (room.players.length < 2) return emitError('Need at least 2 players.');
     if (room.started) return;
     shuffle(room.players);
@@ -243,25 +312,28 @@ io.on('connection', (socket) => {
   socket.on('setTargetAndPlay', ({ targetRank, cardIds }) => {
     const room = rooms[currentRoomId];
     if (!room || !room.started || room.gameOver) return;
+    const me = findPlayerBySocket(room, socket.id);
+    if (!me) return;
     if (room.targetRank !== null) return emitError('Target rank already set.');
-    if (room.players[room.currentTurnIdx].id !== socket.id) return emitError('Not your turn.');
+    if (room.players[room.currentTurnIdx].id !== me.id) return emitError('Not your turn.');
     if (!RANKS.includes(targetRank)) return emitError('Invalid rank.');
     if (targetRank === 'J') return emitError('Jacks cannot be the target rank - bluff with them instead.');
     room.targetRank = targetRank;
     room.log.push(`${room.players[room.currentTurnIdx].name} sets Target Rank to ${targetRank}.`);
-    playCards(room, socket, cardIds);
+    playCards(room, me, cardIds);
   });
 
   socket.on('playCards', ({ cardIds }) => {
     const room = rooms[currentRoomId];
     if (!room || !room.started || room.gameOver) return;
+    const me = findPlayerBySocket(room, socket.id);
+    if (!me) return;
     if (room.targetRank === null) return emitError('Target rank not set yet.');
-    if (room.players[room.currentTurnIdx].id !== socket.id) return emitError('Not your turn.');
-    playCards(room, socket, cardIds);
+    if (room.players[room.currentTurnIdx].id !== me.id) return emitError('Not your turn.');
+    playCards(room, me, cardIds);
   });
 
-  function playCards(room, sock, cardIds) {
-    const player = room.players.find(p => p.id === sock.id);
+  function playCards(room, player, cardIds) {
     if (!player) return;
     if (!Array.isArray(cardIds) || cardIds.length < 1 || cardIds.length > 3) {
       return emitError('Play 1 to 3 cards.');
@@ -295,10 +367,11 @@ io.on('connection', (socket) => {
   socket.on('callLiar', () => {
     const room = rooms[currentRoomId];
     if (!room || !room.started || room.gameOver) return;
-    if (room.canChallengeId !== socket.id) return emitError('You cannot challenge right now.');
+    const challenger = findPlayerBySocket(room, socket.id);
+    if (!challenger) return;
+    if (room.canChallengeId !== challenger.id) return emitError('You cannot challenge right now.');
     if (room.lastPlayedCards.length === 0) return emitError('Nothing to challenge.');
 
-    const challenger = room.players.find(p => p.id === socket.id);
     const lastPlayer = room.players.find(p => p.id === room.lastPlayerId);
     const lastCards = room.lastPlayedCards;
     const wasLie = lastCards.some(c => c.rank !== room.targetRank);
@@ -338,7 +411,7 @@ io.on('connection', (socket) => {
     if (!room || !room.started || room.gameOver) return;
     if (!RANKS.includes(rank)) return emitError('Invalid rank.');
     if (rank === 'J') return emitError('You cannot discard four Jacks.');
-    const player = room.players.find(p => p.id === socket.id);
+    const player = findPlayerBySocket(room, socket.id);
     if (!player) return;
     const matching = player.hand.filter(c => c.rank === rank);
     if (matching.length !== 4) return emitError('You do not have all 4 of that rank.');
@@ -360,7 +433,8 @@ io.on('connection', (socket) => {
   socket.on('endGame', () => {
     const room = rooms[currentRoomId];
     if (!room) return;
-    if (room.hostId !== socket.id) return emitError('Only the host can end the game.');
+    const me = findPlayerBySocket(room, socket.id);
+    if (!me || room.hostId !== me.id) return emitError('Only the host can end the game.');
     if (!room.started) return;
     room.started = false;
     room.gameOver = false;
@@ -387,6 +461,10 @@ io.on('connection', (socket) => {
     room.players.forEach(p => { p.hand = []; p.isSkipped = false; });
     clearPile(room);
     // Drop disconnected players - they didn't come back for a rematch.
+    const dropped = room.players.filter(p => !p.connected);
+    dropped.forEach(p => {
+      if (p.removalTimer) { clearTimeout(p.removalTimer); p.removalTimer = null; }
+    });
     room.players = room.players.filter(p => p.connected);
     if (room.players.length === 0) { delete rooms[room.id]; return; }
     if (!room.players.find(p => p.id === room.hostId)) {
@@ -399,18 +477,22 @@ io.on('connection', (socket) => {
   socket.on('kickPlayer', ({ playerId }) => {
     const room = rooms[currentRoomId];
     if (!room) return;
-    if (room.hostId !== socket.id) return emitError('Only the host can kick.');
+    const me = findPlayerBySocket(room, socket.id);
+    if (!me || room.hostId !== me.id) return emitError('Only the host can kick.');
     if (room.started) return emitError('You cannot kick during a game.');
-    if (playerId === socket.id) return emitError('You cannot kick yourself.');
+    if (playerId === me.id) return emitError('You cannot kick yourself.');
     const idx = room.players.findIndex(p => p.id === playerId);
     if (idx === -1) return;
     const kicked = room.players[idx];
     room.players.splice(idx, 1);
+    if (kicked.removalTimer) { clearTimeout(kicked.removalTimer); kicked.removalTimer = null; }
     room.log.push(`${kicked.name} was kicked by the host.`);
-    const sock = io.sockets.sockets.get(kicked.socketId);
-    if (sock) {
-      sock.emit('kicked', { reason: 'You were kicked from the room by the host.' });
-      sock.leave(room.id);
+    if (kicked.socketId) {
+      const sock = io.sockets.sockets.get(kicked.socketId);
+      if (sock) {
+        sock.emit('kicked', { reason: 'You were kicked from the room by the host.' });
+        sock.leave(room.id);
+      }
     }
     broadcast(room);
   });
@@ -418,46 +500,115 @@ io.on('connection', (socket) => {
   socket.on('chat', ({ message }) => {
     const room = rooms[currentRoomId];
     if (!room) return;
-    const player = room.players.find(p => p.id === socket.id);
+    const player = findPlayerBySocket(room, socket.id);
     if (!player) return;
     const msg = String(message || '').slice(0, 200);
     if (!msg.trim()) return;
     io.to(room.id).emit('chat', { name: player.name, message: msg });
   });
 
+  // Explicit "Leave Room" — different from a network drop. Removes the seat
+  // entirely so the player can't auto-reconnect into it later.
+  socket.on('leaveRoom', () => {
+    const room = rooms[currentRoomId];
+    if (!room) return;
+    const player = findPlayerBySocket(room, socket.id);
+    if (!player) return;
+    const wasHost = room.hostId === player.id;
+    if (player.removalTimer) { clearTimeout(player.removalTimer); player.removalTimer = null; }
+    room.players = room.players.filter(p => p.id !== player.id);
+    socket.leave(room.id);
+    currentRoomId = null;
+    if (room.players.length === 0) {
+      delete rooms[room.id];
+      return;
+    }
+    if (wasHost) {
+      const newHost = room.players.find(p => p.connected) || room.players[0];
+      room.hostId = newHost.id;
+    }
+    if (room.started) {
+      // Mid-game leave: rebalance turn / challenge pointers similar to disconnect.
+      if (room.currentTurnIdx >= room.players.length) room.currentTurnIdx = 0;
+      // Indices may have shifted; keep things sane.
+      const stillActive = room.players.some(p => p.connected && p.hand.length > 0);
+      if (stillActive) {
+        // If the leaver was up, advance to the next active.
+        const cur = room.players[room.currentTurnIdx];
+        if (!cur || !cur.connected || cur.hand.length === 0) {
+          room.currentTurnIdx = findNextActiveIdx(room, room.currentTurnIdx === 0 ? room.players.length - 1 : room.currentTurnIdx - 1);
+        }
+        room.canChallengeId = room.players[room.currentTurnIdx].id;
+      }
+      room.log.push(`${player.name} left the game.`);
+      checkLastPlayerStanding(room);
+    } else {
+      room.log.push(`${player.name} left the lobby.`);
+    }
+    broadcast(room);
+  });
+
   socket.on('disconnect', () => {
     const room = rooms[currentRoomId];
     if (!room) return;
-    const player = room.players.find(p => p.id === socket.id);
+    const player = findPlayerBySocket(room, socket.id);
     if (!player) return;
     player.connected = false;
+    player.socketId = null;
+
     if (!room.started) {
-      room.players = room.players.filter(p => p.id !== socket.id);
-      if (room.hostId === socket.id && room.players.length > 0) {
-        room.hostId = room.players[0].id;
+      // Lobby grace period: keep the seat for a minute so refresh / blip can rejoin.
+      // After the timer fires, drop them if they haven't reconnected.
+      room.log.push(`${player.name} disconnected (waiting for them to come back…).`);
+      if (room.hostId === player.id) {
+        const newHost = room.players.find(p => p.connected);
+        if (newHost) room.hostId = newHost.id;
       }
-      if (room.players.length === 0) { delete rooms[room.id]; return; }
-      room.log.push(`${player.name} left the lobby.`);
+      if (player.removalTimer) clearTimeout(player.removalTimer);
+      const playerIdSnapshot = player.id;
+      const roomIdSnapshot = room.id;
+      player.removalTimer = setTimeout(() => {
+        const r = rooms[roomIdSnapshot];
+        if (!r) return;
+        const p = r.players.find(x => x.id === playerIdSnapshot);
+        if (!p || p.connected) return;  // they came back — don't remove
+        r.players = r.players.filter(x => x.id !== playerIdSnapshot);
+        r.log.push(`${p.name} did not return — removed from the lobby.`);
+        if (r.hostId === playerIdSnapshot && r.players.length > 0) {
+          r.hostId = r.players[0].id;
+        }
+        if (r.players.length === 0) {
+          delete rooms[r.id];
+          return;
+        }
+        broadcast(r);
+      }, LOBBY_GRACE_MS);
     } else {
-      room.log.push(`${player.name} disconnected and will be skipped.`);
+      room.log.push(`${player.name} disconnected — they can rejoin with the room code.`);
       // Pass the host crown if the host dropped, so the game can be ended/restarted.
-      if (room.hostId === socket.id) {
+      if (room.hostId === player.id) {
         const newHost = room.players.find(p => p.connected);
         if (newHost) room.hostId = newHost.id;
       }
       // If the disconnect victim was the player whose turn it is, skip them.
-      const myIdx = room.players.findIndex(p => p.id === socket.id);
+      const myIdx = room.players.findIndex(p => p.id === player.id);
       if (myIdx === room.currentTurnIdx) {
-        const wasChallenger = room.canChallengeId === socket.id;
+        const wasChallenger = room.canChallengeId === player.id;
         room.currentTurnIdx = findNextActiveIdx(room, room.currentTurnIdx);
         room.canChallengeId = wasChallenger ? room.players[room.currentTurnIdx].id : room.canChallengeId;
-      } else if (room.canChallengeId === socket.id) {
+      } else if (room.canChallengeId === player.id) {
         // Challenger dropped without acting - pass challenge rights to the next active player.
         const newIdx = findNextActiveIdx(room, myIdx);
         room.canChallengeId = room.players[newIdx].id;
         room.currentTurnIdx = newIdx;
       }
     }
+
+    // If everyone is offline, schedule the room itself for cleanup after a longer grace.
+    if (!room.players.some(p => p.connected)) {
+      scheduleEmptyRoomCleanup(room);
+    }
+
     broadcast(room);
   });
 });
