@@ -1,5 +1,15 @@
 // client.js - Lugen frontend
+const AUTH_TOKEN_KEY = 'lugen-auth-token';
+let authToken = null;
+let authUser = null;
+let authConfig = { authEnabled: false, minPasswordLen: 6 };
+
+// Read the auth token from localStorage early so we can pass it to socket.io
+// during the initial handshake.
+try { authToken = localStorage.getItem(AUTH_TOKEN_KEY) || null; } catch (_) {}
+
 const socket = io({
+  auth: { token: authToken || '' },
   reconnection: true,
   reconnectionAttempts: Infinity,
   reconnectionDelay: 500,
@@ -55,6 +65,263 @@ function clearSession() {
   session = null;
   try { localStorage.removeItem(STORAGE_KEY); } catch (_) {}
 }
+
+// ---------- Auth ----------
+function saveToken(t) {
+  authToken = t || null;
+  try {
+    if (authToken) localStorage.setItem(AUTH_TOKEN_KEY, authToken);
+    else            localStorage.removeItem(AUTH_TOKEN_KEY);
+  } catch (_) {}
+}
+
+async function fetchJson(url, opts) {
+  const o = Object.assign({ headers: {} }, opts || {});
+  o.headers = Object.assign({ 'Content-Type': 'application/json' }, o.headers || {});
+  if (authToken) o.headers['Authorization'] = `Bearer ${authToken}`;
+  const r = await fetch(url, o);
+  let data = null;
+  try { data = await r.json(); } catch (_) {}
+  if (!r.ok) throw new Error((data && data.error) || `HTTP ${r.status}`);
+  return data;
+}
+
+async function loadAuthConfig() {
+  try {
+    const r = await fetchJson('/api/config');
+    authConfig = r || authConfig;
+  } catch (_) {}
+}
+
+async function loadCurrentUser() {
+  if (!authToken) { renderAuthBar(null); return; }
+  try {
+    const r = await fetchJson('/api/me');
+    authUser = r.user;
+    authUser._modifierStats = r.modifierStats || [];
+    renderAuthBar(authUser);
+  } catch (_) {
+    // Token expired/invalid — clear it.
+    saveToken(null);
+    authUser = null;
+    renderAuthBar(null);
+  }
+}
+
+function renderAuthBar(user) {
+  const bar = $('authBar');
+  const out = $('authSignedOut');
+  const inn = $('authSignedIn');
+  if (!bar || !out || !inn) return;
+  if (!authConfig.authEnabled) {
+    bar.classList.add('hidden');
+    return;
+  }
+  bar.classList.remove('hidden');
+  if (user) {
+    out.classList.add('hidden');
+    inn.classList.remove('hidden');
+    inn.classList.add('flex');
+    $('authUsername').textContent = user.username;
+  } else {
+    inn.classList.add('hidden');
+    inn.classList.remove('flex');
+    out.classList.remove('hidden');
+  }
+  // Lobby name input becomes a read-only "signed in as X" hint.
+  const nameInput = $('playerName');
+  const hint = $('signedInAs');
+  if (user) {
+    if (nameInput) {
+      nameInput.value = user.username;
+      nameInput.disabled = true;
+      nameInput.classList.add('opacity-50');
+    }
+    if (hint) {
+      hint.textContent = `Signed in as ${user.username}.`;
+      hint.classList.remove('hidden');
+    }
+  } else {
+    if (nameInput) {
+      nameInput.disabled = false;
+      nameInput.classList.remove('opacity-50');
+    }
+    if (hint) hint.classList.add('hidden');
+  }
+}
+
+function openAuthModal(mode) {
+  const m = $('authModal');
+  $('authModalTitle').textContent = mode === 'signup' ? 'Sign Up' : 'Sign In';
+  $('authSubmitBtn').textContent  = mode === 'signup' ? 'Create account' : 'Sign in';
+  $('authHint').textContent = mode === 'signup'
+    ? `Username: 3–20 chars (letters, digits, _ or -). Password: at least ${authConfig.minPasswordLen} chars.`
+    : '';
+  $('authError').textContent = '';
+  $('authUsernameInput').value = '';
+  $('authPasswordInput').value = '';
+  m.dataset.mode = mode;
+  m.classList.remove('hidden');
+  setTimeout(() => $('authUsernameInput').focus(), 50);
+}
+function closeAuthModal() { $('authModal').classList.add('hidden'); }
+
+async function submitAuth() {
+  const m = $('authModal');
+  const mode = m.dataset.mode || 'signin';
+  const username = $('authUsernameInput').value.trim();
+  const password = $('authPasswordInput').value;
+  const errEl = $('authError');
+  errEl.textContent = '';
+  if (!username || !password) {
+    errEl.textContent = 'Username and password are required.';
+    return;
+  }
+  $('authSubmitBtn').disabled = true;
+  try {
+    const url = mode === 'signup' ? '/api/signup' : '/api/login';
+    const r = await fetchJson(url, { method: 'POST', body: JSON.stringify({ username, password }) });
+    saveToken(r.token);
+    authUser = r.user;
+    closeAuthModal();
+    renderAuthBar(authUser);
+    // Reconnect the socket so the server picks up the new token.
+    socket.auth = { token: authToken };
+    socket.disconnect();
+    socket.connect();
+  } catch (e) {
+    errEl.textContent = e.message || 'Failed.';
+  } finally {
+    $('authSubmitBtn').disabled = false;
+  }
+}
+
+async function doSignOut() {
+  try { await fetchJson('/api/logout', { method: 'POST' }); } catch (_) {}
+  saveToken(null);
+  authUser = null;
+  renderAuthBar(null);
+  // Reconnect the socket without a token.
+  socket.auth = { token: '' };
+  socket.disconnect();
+  socket.connect();
+}
+
+function fmtPct(num, denom) {
+  if (!denom) return '—';
+  return Math.round((num / denom) * 1000) / 10 + '%';
+}
+
+const MOD_PRETTY = {
+  liarsBar: "Liar's Bar Mode",
+  leanDeck: 'Lean Deck',
+  loadedPile: 'Loaded Pile',
+  trickle: 'Trickle Mode',
+  jokers: 'Jokers',
+  wildSuit: 'Wild Suit',
+  fogOfWar: 'Fog of War',
+  mysteryHands: 'Mystery Hands',
+  shuffleSeats: 'Shuffle Seats'
+};
+
+function renderStatsModal(user) {
+  if (!user) return;
+  $('statsUsername').textContent = user.username;
+  const body = $('statsBody');
+  const block = (label, won, lost, played) => `
+    <div class="bg-white/5 rounded-lg px-3 py-2">
+      <div class="font-bold text-emerald-300">${label}</div>
+      <div class="grid grid-cols-3 gap-2 text-center mt-1">
+        <div><div class="text-2xl font-extrabold">${played}</div><div class="text-[10px] text-white/60">games</div></div>
+        <div><div class="text-2xl font-extrabold text-emerald-400">${won}</div><div class="text-[10px] text-white/60">wins</div></div>
+        <div><div class="text-2xl font-extrabold text-red-400">${lost}</div><div class="text-[10px] text-white/60">losses</div></div>
+      </div>
+      <div class="text-center text-xs text-white/70 mt-1">Win rate: ${fmtPct(won, played)}</div>
+    </div>`;
+  let html = '';
+  html += block('Overall', user.games_won, user.games_lost, user.games_played);
+  html += block('Classic', user.classic_won, user.classic_lost, user.classic_played);
+  html += `<div class="bg-white/5 rounded-lg px-3 py-2">
+    <div class="font-bold text-red-300">Liar's Bar</div>
+    <div class="grid grid-cols-4 gap-2 text-center mt-1">
+      <div><div class="text-2xl font-extrabold">${user.liarsbar_played}</div><div class="text-[10px] text-white/60">games</div></div>
+      <div><div class="text-2xl font-extrabold text-emerald-400">${user.liarsbar_won}</div><div class="text-[10px] text-white/60">wins</div></div>
+      <div><div class="text-2xl font-extrabold text-red-400">${user.liarsbar_lost}</div><div class="text-[10px] text-white/60">losses</div></div>
+      <div><div class="text-2xl font-extrabold text-amber-400">${user.liarsbar_eliminations}</div><div class="text-[10px] text-white/60">elims</div></div>
+    </div>
+    <div class="text-center text-xs text-white/70 mt-1">Win rate: ${fmtPct(user.liarsbar_won, user.liarsbar_played)}</div>
+  </div>`;
+  const mods = user._modifierStats || [];
+  if (mods.length) {
+    html += '<div class="font-bold text-yellow-300 mt-2">By modifier</div>';
+    html += '<div class="space-y-1">';
+    for (const m of mods) {
+      const pretty = MOD_PRETTY[m.modifier_key] || m.modifier_key;
+      html += `<div class="flex justify-between bg-white/5 rounded px-3 py-1">
+        <span>${escapeHtml(pretty)}</span>
+        <span class="font-mono text-xs">${m.games_won}/${m.games_active} (${fmtPct(m.games_won, m.games_active)})</span>
+      </div>`;
+    }
+    html += '</div>';
+  }
+  body.innerHTML = html;
+  $('statsModal').classList.remove('hidden');
+}
+
+async function openStats() {
+  if (!authUser) return;
+  // Refresh first to pull latest numbers from server.
+  try {
+    const r = await fetchJson('/api/me');
+    authUser = r.user;
+    authUser._modifierStats = r.modifierStats || [];
+  } catch (_) {}
+  renderStatsModal(authUser);
+}
+
+async function openLeaderboard() {
+  $('leaderboardModal').classList.remove('hidden');
+  const body = $('leaderboardBody');
+  body.textContent = 'Loading…';
+  try {
+    const r = await fetchJson('/api/leaderboard');
+    const list = r.users || [];
+    if (list.length === 0) { body.innerHTML = '<div class="text-white/60 text-center py-4">No games played yet.</div>'; return; }
+    let html = `<div class="grid grid-cols-12 gap-1 text-xs text-white/60 px-2 mb-1">
+      <div class="col-span-1">#</div>
+      <div class="col-span-5">Player</div>
+      <div class="col-span-2 text-right">Wins</div>
+      <div class="col-span-2 text-right">Games</div>
+      <div class="col-span-2 text-right">Win %</div>
+    </div>`;
+    list.forEach((u, idx) => {
+      const isMe = authUser && u.id === authUser.id;
+      html += `<div class="grid grid-cols-12 gap-1 px-2 py-1 rounded ${isMe ? 'bg-emerald-500/20' : (idx % 2 === 0 ? 'bg-white/5' : '')}">
+        <div class="col-span-1 font-bold ${idx === 0 ? 'text-yellow-300' : idx === 1 ? 'text-gray-300' : idx === 2 ? 'text-amber-600' : ''}">${idx + 1}</div>
+        <div class="col-span-5 truncate">${escapeHtml(u.username)}${isMe ? ' (you)' : ''}</div>
+        <div class="col-span-2 text-right font-mono text-emerald-300">${u.games_won}</div>
+        <div class="col-span-2 text-right font-mono">${u.games_played}</div>
+        <div class="col-span-2 text-right font-mono">${u.win_rate}%</div>
+      </div>`;
+    });
+    body.innerHTML = html;
+  } catch (e) {
+    body.textContent = e.message || 'Failed to load.';
+  }
+}
+
+// Wire auth UI
+$('signInBtn').onclick = () => openAuthModal('signin');
+$('signUpBtn').onclick = () => openAuthModal('signup');
+$('signOutBtn').onclick = doSignOut;
+$('statsBtn').onclick = openStats;
+$('leaderboardBtn').onclick = openLeaderboard;
+$('authCancelBtn').onclick = closeAuthModal;
+$('authSubmitBtn').onclick = submitAuth;
+$('statsCloseBtn').onclick = () => $('statsModal').classList.add('hidden');
+$('leaderboardCloseBtn').onclick = () => $('leaderboardModal').classList.add('hidden');
+$('authPasswordInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitAuth(); });
+$('authUsernameInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('authPasswordInput').focus(); });
 
 // ---------- Sound effects ----------
 function playSound(src, volume) {
@@ -195,8 +462,11 @@ socket.on('roomState', (state) => {
     $('game').classList.remove('hidden');
     renderGame(state);
   }
-  if (state.gameOver) showGameOver(state);
-  else $('gameOver').classList.add('hidden');
+  if (state.gameOver) {
+    showGameOver(state);
+    // Refresh stats so the user sees the new numbers when they open the modal.
+    if (authUser) loadCurrentUser();
+  } else $('gameOver').classList.add('hidden');
   $('endGameBtn').classList.toggle('hidden', !(state.started && state.hostId === myId && !state.gameOver));
 });
 
@@ -363,7 +633,7 @@ function renderWaitingRoom(state) {
     div.className = 'flex justify-between items-center px-3 py-2 rounded bg-white/5';
     const showKick = isHost && p.id !== myId;
     div.innerHTML = `
-      <span>${escapeHtml(p.name)}${p.id === myId ? ' <span class="text-emerald-300">(you)</span>' : ''}${p.id === state.hostId ? ' \u{1F451}' : ''}</span>
+      <span>${escapeHtml(p.name)}${p.username ? ' <span class="text-[10px] text-emerald-300">★</span>' : ''}${p.id === myId ? ' <span class="text-emerald-300">(you)</span>' : ''}${p.id === state.hostId ? ' \u{1F451}' : ''}</span>
       <span class="flex items-center gap-2">
         <span class="text-xs ${p.connected ? 'text-emerald-200' : 'text-amber-300'}">${p.connected ? 'online' : 'offline'}</span>
         ${showKick ? '<button class="kickBtn bg-red-600/70 hover:bg-red-600 text-xs px-2 py-1 rounded font-bold transition">Kick</button>' : ''}
@@ -459,7 +729,7 @@ function renderGame(state) {
     div.innerHTML = `
       ${p.seatNumber ? `<div class="absolute -top-2 -left-2 bg-yellow-400 text-black w-7 h-7 rounded-full flex items-center justify-center font-extrabold text-sm shadow">${p.seatNumber}</div>` : ''}
       ${isMe ? '<div class="absolute -top-2 -right-2 bg-emerald-400 text-black px-2 py-0.5 rounded-full text-[10px] font-extrabold shadow">YOU</div>' : ''}
-      <div class="font-bold truncate">${escapeHtml(p.name)}${p.isSkipped ? ' ⏭' : ''}</div>
+      <div class="font-bold truncate">${escapeHtml(p.name)}${p.username ? ' <span class="text-[10px] text-emerald-300">★</span>' : ''}${p.isSkipped ? ' ⏭' : ''}</div>
       <div class="text-3xl my-1">${isDead ? '\u{1F480}' : (isOut ? '\u{1F3C6}' : (isMe ? '\u{1F0CF}' : '\u{1F0A0}'))}</div>
       <div class="text-sm">${countLabel}</div>
       ${gunHtml}
@@ -487,7 +757,6 @@ function renderGame(state) {
     }
   }
 
-  // Show "X just played N cards" — or "X just played some cards" under fog.
   if (state.lastPlayCount > 0) {
     const lp = state.players.find(p => p.id === state.lastPlayerId);
     $('lastPlayInfo').textContent = `${lp ? lp.name : 'Someone'} just played ${state.lastPlayCount} card(s).`;
@@ -729,3 +998,13 @@ function escapeHtml(str) {
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]
   ));
 }
+
+// Boot: load auth config + current user info.
+(async () => {
+  await loadAuthConfig();
+  if (authConfig.authEnabled) {
+    await loadCurrentUser();
+  } else {
+    renderAuthBar(null);
+  }
+})();

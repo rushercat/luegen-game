@@ -1,9 +1,11 @@
 // server.js - Lugen multiplayer card game backend
+require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const path = require('path');
 const crypto = require('crypto');
 const { Server } = require('socket.io');
+const auth = require('./auth');
 
 const app = express();
 const server = http.createServer(app);
@@ -11,6 +13,7 @@ const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
 
+app.use(express.json({ limit: '64kb' }));
 app.use(express.static(path.join(__dirname, 'public'), {
   setHeaders: (res, filepath) => {
     if (filepath.endsWith('.js'))   res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
@@ -21,6 +24,55 @@ app.use(express.static(path.join(__dirname, 'public'), {
 app.get('/', (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// ---------- Auth REST endpoints ----------
+function bearerToken(req) {
+  const h = req.headers.authorization || '';
+  return h.startsWith('Bearer ') ? h.slice(7) : '';
+}
+
+app.get('/api/config', (_req, res) => {
+  res.json({ authEnabled: auth.enabled, minPasswordLen: auth.MIN_PASSWORD_LEN });
+});
+
+app.post('/api/signup', async (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    const user = await auth.signup(username, password);
+    const token = await auth.createSession(user.id);
+    res.json({ token, user: auth.publicUser(user) });
+  } catch (e) {
+    res.status(400).json({ error: e.message || 'Signup failed.' });
+  }
+});
+
+app.post('/api/login', async (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    const user = await auth.login(username, password);
+    const token = await auth.createSession(user.id);
+    res.json({ token, user: auth.publicUser(user) });
+  } catch (e) {
+    res.status(400).json({ error: e.message || 'Login failed.' });
+  }
+});
+
+app.post('/api/logout', async (req, res) => {
+  await auth.deleteSession(bearerToken(req));
+  res.json({ ok: true });
+});
+
+app.get('/api/me', async (req, res) => {
+  const user = await auth.getUserByToken(bearerToken(req));
+  if (!user) return res.status(401).json({ error: 'Not signed in.' });
+  const mods = await auth.userModifierStats(user.id);
+  res.json({ user: auth.publicUser(user), modifierStats: mods });
+});
+
+app.get('/api/leaderboard', async (_req, res) => {
+  const list = await auth.leaderboard(20);
+  res.json({ users: list });
 });
 
 // ---------- Game constants ----------
@@ -86,7 +138,6 @@ function dealCards(deck, numPlayers) {
   return hands;
 }
 
-// Lean Deck: Jacks + jokers untouched, drops spread round-robin.
 function applyLeanDeck(deck, cardsToRemove) {
   if (cardsToRemove <= 0) return deck;
   const eligibleRanks = RANKS.filter(r => r !== 'J');
@@ -148,18 +199,27 @@ function describeActiveSettings(s) {
   return out;
 }
 
+// Stable keys recorded against modifier_stats — independent of the human label.
+function activeModifierKeys(s) {
+  const out = [];
+  if (s.liarsBar)              out.push('liarsBar');
+  if (s.cardsRemoved > 0)      out.push('leanDeck');
+  if (s.pileStart > 0)         out.push('loadedPile');
+  if (s.maxCards < 3)          out.push('trickle');
+  if (s.jokerRandom || s.jokerCount > 0) out.push('jokers');
+  if (s.wildSuit)              out.push('wildSuit');
+  if (s.fogOfWar)              out.push('fogOfWar');
+  if (s.mysteryHands)          out.push('mysteryHands');
+  if (s.shuffleSeats)          out.push('shuffleSeats');
+  return out;
+}
+
 function defaultSettings() {
   return {
-    cardsRemoved: 0,
-    pileStart:    0,
-    maxCards:     3,
-    mysteryHands: false,
-    liarsBar:     false,
-    shuffleSeats: false,
-    jokerCount:   0,
-    jokerRandom:  false,
-    wildSuit:     '',
-    fogOfWar:     false
+    cardsRemoved: 0, pileStart: 0, maxCards: 3,
+    mysteryHands: false, liarsBar: false, shuffleSeats: false,
+    jokerCount: 0, jokerRandom: false,
+    wildSuit: '', fogOfWar: false
   };
 }
 
@@ -168,35 +228,18 @@ const rooms = {};
 
 function newRoom(id) {
   return {
-    id,
-    players: [],
-    pile: [],
-    lastPlayedCards: [],
-    lastPlayCount: 0,
-    lastPlayerId: null,
-    canChallengeId: null,
-    currentTurnIdx: 0,
-    targetRank: null,
-    started: false,
-    log: [],
-    revealedFour: null,
-    gameOver: false,
-    winners: [],
-    losers: [],
-    hostId: null,
-    emptyTimer: null,
-    settings: defaultSettings(),
-    actualJokerCount: 0,
-    actualWildSuit: ''
+    id, players: [], pile: [], lastPlayedCards: [], lastPlayCount: 0,
+    lastPlayerId: null, canChallengeId: null, currentTurnIdx: 0,
+    targetRank: null, started: false, log: [], revealedFour: null,
+    gameOver: false, winners: [], losers: [], hostId: null, emptyTimer: null,
+    settings: defaultSettings(), actualJokerCount: 0, actualWildSuit: '',
+    statsRecorded: false
   };
 }
 
 function publicState(room) {
   const hideCounts = room.settings && room.settings.mysteryHands && room.started && !room.gameOver;
   const hideJokerCount = room.started && !room.gameOver && !!room.settings.jokerRandom;
-  // Fog of War: hide pile size, last-play count AND the entire game log so
-  // play counts in log lines like "Bob plays 2 cards claiming K" don't leak.
-  // Everything is restored once the game ends.
   const fog = room.settings && room.settings.fogOfWar && room.started && !room.gameOver;
   return {
     id: room.id,
@@ -207,6 +250,7 @@ function publicState(room) {
     players: room.players.map((p, idx) => ({
       id: p.id,
       name: p.name,
+      username: p.username || null,
       cardCount: hideCounts && p.hand.length > 0 ? null : p.hand.length,
       isSkipped: !!p.isSkipped,
       connected: !!p.connected,
@@ -229,7 +273,35 @@ function publicState(room) {
   };
 }
 
+function recordCompletedGameStats(room) {
+  if (!auth.enabled || !room.gameOver || room.statsRecorded) return;
+  // Don't credit stats when the host force-ends a game (started=false & no winners).
+  if (!room.winners || room.winners.length === 0) return;
+  room.statsRecorded = true;
+  const mode = room.settings.liarsBar ? 'liarsbar' : 'classic';
+  const winners = new Set(room.winners);
+  const losers = new Set(room.losers);
+  const entries = [];
+  for (const p of room.players) {
+    if (!p.userId) continue;
+    entries.push({
+      userId: p.userId,
+      won: winners.has(p.id),
+      lost: losers.has(p.id),
+      mode,
+      eliminated: p.alive === false
+    });
+  }
+  if (entries.length === 0) return;
+  const mods = activeModifierKeys(room.settings);
+  // Fire and forget — don't block the broadcast.
+  auth.recordGameStats(entries, mods).catch(err => {
+    console.error('[stats] record failed', err && err.message);
+  });
+}
+
 function broadcast(room) {
+  if (room.gameOver && !room.statsRecorded) recordCompletedGameStats(room);
   io.to(room.id).emit('roomState', publicState(room));
   for (const p of room.players) {
     if (p.socketId) io.to(p.socketId).emit('hand', p.hand);
@@ -305,12 +377,8 @@ function checkLastPlayerStanding(room) {
 }
 
 function clearPile(room) {
-  room.pile = [];
-  room.lastPlayedCards = [];
-  room.lastPlayCount = 0;
-  room.lastPlayerId = null;
-  room.canChallengeId = null;
-  room.targetRank = null;
+  room.pile = []; room.lastPlayedCards = []; room.lastPlayCount = 0;
+  room.lastPlayerId = null; room.canChallengeId = null; room.targetRank = null;
 }
 
 function findPlayerBySocket(room, socketId) {
@@ -328,13 +396,9 @@ function scheduleEmptyRoomCleanup(room) {
 }
 
 function cancelEmptyRoomCleanup(room) {
-  if (room.emptyTimer) {
-    clearTimeout(room.emptyTimer);
-    room.emptyTimer = null;
-  }
+  if (room.emptyTimer) { clearTimeout(room.emptyTimer); room.emptyTimer = null; }
 }
 
-// ---------- Liar's Bar mechanics ----------
 function pickRandomTargetRank() {
   return LIARS_BAR_RANKS[Math.floor(Math.random() * LIARS_BAR_RANKS.length)];
 }
@@ -372,8 +436,14 @@ function applyShuffleSeatsPreservingStarter(room, starterId) {
 }
 
 // ---------- Socket handlers ----------
-io.on('connection', (socket) => {
+io.on('connection', async (socket) => {
   let currentRoomId = null;
+  // Resolve the user (if any) from the auth token sent in the handshake.
+  let socketUser = null;
+  const authToken = socket.handshake && socket.handshake.auth && socket.handshake.auth.token;
+  if (authToken) {
+    try { socketUser = await auth.getUserByToken(authToken); } catch (_) {}
+  }
 
   function emitError(message) { socket.emit('errorMsg', { message }); }
 
@@ -404,14 +474,17 @@ io.on('connection', (socket) => {
     if (!room) return socket.emit('reconnectFailed', { reason: 'Room no longer exists.' });
     const player = room.players.find(p => p.id === playerId);
     if (!player) return socket.emit('reconnectFailed', { reason: 'You are no longer in that room.' });
-    if (player.removalTimer) {
-      clearTimeout(player.removalTimer);
-      player.removalTimer = null;
-    }
+    if (player.removalTimer) { clearTimeout(player.removalTimer); player.removalTimer = null; }
     cancelEmptyRoomCleanup(room);
     const wasOffline = !player.connected;
     player.socketId = socket.id;
     player.connected = true;
+    // Refresh the userId/username on resume so a re-login between sessions
+    // attaches stats to the current account.
+    if (socketUser) {
+      player.userId = socketUser.id;
+      player.username = socketUser.username;
+    }
     socket.join(room.id);
     currentRoomId = room.id;
     if (wasOffline) room.log.push(`${player.name} reconnected.`);
@@ -420,10 +493,17 @@ io.on('connection', (socket) => {
   });
 
   function addPlayer(room, sock, name) {
+    // If this socket is signed in, force the username (tied to the account).
+    // Anonymous sockets fall back to whatever the user typed.
+    const displayName = socketUser
+      ? socketUser.username
+      : ((name || '').trim().slice(0, 20) || `Player${room.players.length + 1}`);
     const player = {
       id: newPlayerId(),
       socketId: sock.id,
-      name: (name || '').trim().slice(0, 20) || `Player${room.players.length + 1}`,
+      name: displayName,
+      userId: socketUser ? socketUser.id : null,
+      username: socketUser ? socketUser.username : null,
       hand: [],
       connected: true,
       isSkipped: false,
@@ -478,6 +558,7 @@ io.on('connection', (socket) => {
     shuffle(room.players);
     room.started = true;
     room.gameOver = false;
+    room.statsRecorded = false;
     room.winners = [];
     room.losers = [];
     room.currentTurnIdx = 0;
@@ -611,12 +692,9 @@ io.on('connection', (socket) => {
       const winner = wasLie ? challenger : lastPlayer;
       const result = pullTrigger(loser);
       io.to(room.id).emit('gunPull', {
-        playerId: loser.id,
-        playerName: loser.name,
-        died: result.died,
-        chambersBefore: result.chambersBefore,
-        chambersAfter: result.chambersAfter,
-        prob: result.prob
+        playerId: loser.id, playerName: loser.name,
+        died: result.died, chambersBefore: result.chambersBefore,
+        chambersAfter: result.chambersAfter, prob: result.prob
       });
       if (wasLie) room.log.push(`${challenger.name} called LIAR - ${lastPlayer.name} was lying.`);
       else        room.log.push(`${challenger.name} wrongly accused ${lastPlayer.name}.`);
@@ -697,8 +775,8 @@ io.on('connection', (socket) => {
     if (!room.started) return;
     room.started = false;
     room.gameOver = false;
-    room.winners = [];
-    room.losers = [];
+    room.statsRecorded = false;
+    room.winners = []; room.losers = [];
     room.currentTurnIdx = 0;
     room.revealedFour = null;
     room.players.forEach(p => {
@@ -718,8 +796,8 @@ io.on('connection', (socket) => {
     if (!room.gameOver) return;
     room.started = false;
     room.gameOver = false;
-    room.winners = [];
-    room.losers = [];
+    room.statsRecorded = false;
+    room.winners = []; room.losers = [];
     room.currentTurnIdx = 0;
     room.revealedFour = null;
     room.players.forEach(p => {
@@ -858,5 +936,5 @@ io.on('connection', (socket) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Lugen server listening on port ${PORT}.`);
+  console.log(`Lugen server listening on port ${PORT}.${auth.enabled ? ' (Supabase auth enabled)' : ''}`);
 });

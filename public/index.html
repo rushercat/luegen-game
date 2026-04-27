@@ -27,6 +27,59 @@
 </head>
 <body class="bg-gradient-to-br from-emerald-900 via-green-800 to-emerald-950 min-h-screen text-white">
 
+<!-- ============ AUTH BAR (top-left) ============ -->
+<div id="authBar" class="hidden fixed top-4 left-4 z-40 flex items-center gap-2 bg-black/40 backdrop-blur rounded-full px-3 py-2 shadow-lg">
+  <div id="authSignedOut" class="flex items-center gap-2">
+    <button id="signInBtn" class="bg-white/10 hover:bg-yellow-400 hover:text-black px-3 py-1 rounded-full text-sm font-bold transition">Sign in</button>
+    <button id="signUpBtn" class="bg-yellow-500 hover:bg-yellow-400 text-black px-3 py-1 rounded-full text-sm font-bold transition">Sign up</button>
+  </div>
+  <div id="authSignedIn" class="hidden flex items-center gap-2">
+    <span class="text-sm">👤 <b id="authUsername"></b></span>
+    <button id="statsBtn" class="bg-white/10 hover:bg-emerald-400 hover:text-black px-3 py-1 rounded-full text-xs font-bold transition">Stats</button>
+    <button id="leaderboardBtn" class="bg-white/10 hover:bg-emerald-400 hover:text-black px-3 py-1 rounded-full text-xs font-bold transition">🏆</button>
+    <button id="signOutBtn" class="bg-white/10 hover:bg-red-500 px-3 py-1 rounded-full text-xs font-bold transition">Sign out</button>
+  </div>
+</div>
+
+<!-- ============ AUTH MODALS ============ -->
+<div id="authModal" class="hidden fixed inset-0 bg-black/80 backdrop-blur z-50 flex items-center justify-center p-4">
+  <div class="bg-gradient-to-br from-slate-800 to-slate-900 border border-yellow-400/40 rounded-2xl p-8 max-w-sm w-full shadow-2xl">
+    <h2 id="authModalTitle" class="text-2xl font-extrabold mb-4 text-center">Sign In</h2>
+    <div class="space-y-3">
+      <input id="authUsernameInput" type="text" maxlength="20" placeholder="Username"
+        class="w-full px-4 py-2 rounded bg-white/10 border border-white/20 placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-yellow-400" />
+      <input id="authPasswordInput" type="password" maxlength="100" placeholder="Password"
+        class="w-full px-4 py-2 rounded bg-white/10 border border-white/20 placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-yellow-400" />
+      <p id="authHint" class="text-xs text-emerald-200 text-center min-h-[1.25rem]"></p>
+      <p id="authError" class="text-xs text-red-300 text-center min-h-[1.25rem]"></p>
+    </div>
+    <div class="flex gap-2 mt-4">
+      <button id="authCancelBtn" class="flex-1 bg-white/10 hover:bg-white/20 py-2 rounded-lg font-bold transition">Cancel</button>
+      <button id="authSubmitBtn" class="flex-1 bg-yellow-500 hover:bg-yellow-400 text-black py-2 rounded-lg font-bold transition">Submit</button>
+    </div>
+  </div>
+</div>
+
+<div id="statsModal" class="hidden fixed inset-0 bg-black/80 backdrop-blur z-50 flex items-center justify-center p-4">
+  <div class="bg-gradient-to-br from-slate-800 to-slate-900 border border-emerald-400/40 rounded-2xl p-8 max-w-md w-full shadow-2xl max-h-[90vh] overflow-y-auto scrollbar-thin">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-2xl font-extrabold">📊 <span id="statsUsername"></span>'s Stats</h2>
+      <button id="statsCloseBtn" class="text-white/60 hover:text-white text-2xl leading-none">&times;</button>
+    </div>
+    <div id="statsBody" class="space-y-3 text-sm"></div>
+  </div>
+</div>
+
+<div id="leaderboardModal" class="hidden fixed inset-0 bg-black/80 backdrop-blur z-50 flex items-center justify-center p-4">
+  <div class="bg-gradient-to-br from-slate-800 to-slate-900 border border-yellow-400/40 rounded-2xl p-8 max-w-md w-full shadow-2xl max-h-[90vh] overflow-y-auto scrollbar-thin">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-2xl font-extrabold">🏆 Leaderboard</h2>
+      <button id="leaderboardCloseBtn" class="text-white/60 hover:text-white text-2xl leading-none">&times;</button>
+    </div>
+    <div id="leaderboardBody" class="space-y-1 text-sm"></div>
+  </div>
+</div>
+
 <!-- ============ SETTINGS (gear, top-right) ============ -->
 <div id="settingsContainer" class="hidden fixed top-4 right-4 z-40">
   <button id="settingsBtn" class="bg-black/40 hover:bg-black/60 backdrop-blur p-3 rounded-full transition shadow-lg" title="Settings" aria-label="Settings">
@@ -53,6 +106,7 @@
   <div class="bg-black/40 backdrop-blur p-6 rounded-2xl space-y-4 shadow-xl">
     <input id="playerName" type="text" maxlength="20" placeholder="Your name"
       class="w-full px-4 py-3 rounded-lg bg-white/10 border border-white/20 placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-yellow-400" />
+    <p id="signedInAs" class="hidden text-xs text-emerald-300 text-center"></p>
     <button id="createBtn"
       class="w-full bg-blue-600 hover:bg-blue-700 transition py-3 rounded-lg font-bold">Create Room</button>
     <div class="flex items-center gap-2 text-white/60 text-sm">
