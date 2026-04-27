@@ -76,6 +76,18 @@ app.get('/api/me', async (req, res) => {
   res.json({ user: auth.publicUser(user), modifierStats: mods });
 });
 
+app.post('/api/me/username', async (req, res) => {
+  try {
+    const user = await auth.getUserByToken(bearerToken(req));
+    if (!user) return res.status(401).json({ error: 'Not signed in.' });
+    const { username } = req.body || {};
+    const updated = await auth.changeUsername(user.id, username);
+    res.json({ user: auth.publicUser(updated) });
+  } catch (e) {
+    res.status(400).json({ error: e.message || 'Could not change username.' });
+  }
+});
+
 app.get('/api/leaderboard', async (_req, res) => {
   const list = await auth.leaderboard(20);
   res.json({ users: list });

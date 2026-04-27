@@ -36,7 +36,7 @@
     <button id="signUpBtn" class="bg-yellow-500 hover:bg-yellow-400 text-black px-3 py-1 rounded-full text-sm font-bold transition">Sign up</button>
   </div>
   <div id="authSignedIn" class="hidden flex items-center gap-2">
-    <span class="text-sm">👤 <b id="authUsername"></b></span>
+    <button id="authUsernameBtn" class="text-sm hover:text-yellow-400 transition cursor-pointer">👤 <b id="authUsername"></b></button>
     <button id="statsBtn" class="bg-white/10 hover:bg-emerald-400 hover:text-black px-3 py-1 rounded-full text-xs font-bold transition">Stats</button>
     <button id="leaderboardBtn" class="bg-white/10 hover:bg-emerald-400 hover:text-black px-3 py-1 rounded-full text-xs font-bold transition">🏆</button>
     <button id="signOutBtn" class="bg-white/10 hover:bg-red-500 px-3 py-1 rounded-full text-xs font-bold transition">Sign out</button>
@@ -105,6 +105,42 @@
     <button id="leaveBtn" class="w-full text-left px-4 py-3 hover:bg-red-600/30 transition flex items-center gap-2 border-t border-white/10">
       <span>🚪</span><span>Leave Room</span>
     </button>
+  </div>
+</div>
+
+<!-- ============ PROFILE ============ -->
+<div id="profile" class="hidden max-w-3xl mx-auto pt-8 px-4 pb-10">
+  <div class="flex items-center gap-3 mb-4">
+    <button id="profileBackBtn" class="bg-white/10 hover:bg-white/20 transition px-4 py-2 rounded-lg text-sm">&larr; Back</button>
+    <h2 class="text-3xl font-bold flex-1">Profile</h2>
+  </div>
+
+  <div class="bg-black/40 backdrop-blur p-6 rounded-2xl shadow-xl space-y-6">
+    <div>
+      <h3 class="text-xl font-bold mb-2 text-yellow-300">Account</h3>
+      <p class="text-sm mb-3">Current username: <span id="profileUsername" class="font-bold text-emerald-200"></span></p>
+      <div class="flex gap-2">
+        <input id="profileUsernameInput" type="text" maxlength="20" placeholder="New username (3-20 chars, A-Z 0-9 _ -)" class="flex-1 px-3 py-2 rounded bg-white/10 border border-white/20 placeholder-white/40 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400" />
+        <button id="profileChangeUsernameBtn" class="bg-yellow-500 hover:bg-yellow-400 text-black px-4 py-2 rounded font-bold text-sm">Change</button>
+      </div>
+      <p id="profileUsernameMsg" class="text-xs mt-2 min-h-[1rem]"></p>
+    </div>
+
+    <div>
+      <h3 class="text-xl font-bold mb-2 text-yellow-300">Multiplayer Stats</h3>
+      <div id="profileMultiplayerStats" class="text-sm space-y-1 text-emerald-100"></div>
+    </div>
+
+    <div>
+      <h3 class="text-xl font-bold mb-2 text-yellow-300">Modifier Breakdown</h3>
+      <div id="profileModifierStats" class="text-sm text-emerald-100"></div>
+    </div>
+
+    <div>
+      <h3 class="text-xl font-bold mb-2 text-yellow-300">Beta Prototype</h3>
+      <div id="profileBetaStats" class="text-sm text-emerald-100 mb-2"></div>
+      <div id="profileBetaHistory" class="space-y-1"></div>
+    </div>
   </div>
 </div>
 
@@ -261,6 +297,7 @@
   <div class="flex items-center gap-3 mb-4">
     <button id="betaBackBtn" class="bg-white/10 hover:bg-white/20 transition px-4 py-2 rounded-lg text-sm">&larr; Back to lobby</button>
     <h2 class="text-3xl font-bold flex-1">Beta &middot; Solo Prototype</h2>
+    <button id="betaAdminCheatsBtn" class="hidden bg-amber-700 hover:bg-amber-600 transition px-3 py-1 rounded text-xs font-bold" title="Admin cheats menu">&#128736; Admin</button>
     <span class="bg-yellow-500 text-black text-xs font-extrabold px-2 py-0.5 rounded">PHASE 1</span>
   </div>
 
@@ -430,6 +467,19 @@
     </div>
   </div>
 
+  <!-- ============ TREASURE ============ -->
+  <div id="betaTreasure" class="hidden max-w-md mx-auto pt-2 pb-10 text-center">
+    <h2 class="text-3xl font-bold mb-4">&#128137; Treasure</h2>
+    <div id="betaTreasureChoose">
+      <p class="text-emerald-200 mb-4">A rare cache. Pick a free relic.</p>
+      <div id="betaTreasureOffers" class="text-left mb-4"></div>
+    </div>
+    <div id="betaTreasureConfirm" class="hidden">
+      <p id="betaTreasureConfirmText" class="text-2xl font-bold text-amber-300 my-6"></p>
+      <button id="betaTreasureContinueBtn" class="w-full bg-blue-600 hover:bg-blue-700 transition px-6 py-3 rounded-lg font-bold">Continue to Floor <span id="betaTreasureNextFloor">2</span></button>
+    </div>
+  </div>
+
   <!-- ============ EVENT ============ -->
   <div id="betaEvent" class="hidden max-w-md mx-auto pt-2 pb-10 text-center">
     <h2 class="text-3xl font-bold mb-4">&#10067; Event</h2>
@@ -455,6 +505,49 @@
       <div class="flex flex-col sm:flex-row gap-2">
         <button id="betaResumeContinueBtn" class="flex-1 bg-emerald-600 hover:bg-emerald-500 transition px-4 py-2 rounded-lg font-bold">Continue current run</button>
         <button id="betaResumeNewBtn" class="flex-1 bg-rose-600 hover:bg-rose-500 transition px-4 py-2 rounded-lg font-bold">Start new run</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="betaAdminCheatsModal" class="hidden fixed inset-0 bg-black/80 backdrop-blur z-50 flex items-center justify-center p-4">
+    <div class="bg-slate-800 border-2 border-amber-400 p-6 rounded-2xl shadow-2xl max-w-md w-full max-h-[90vh] overflow-y-auto scrollbar-thin">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-xl font-bold">&#128736; Admin Cheats</h3>
+        <button id="betaAdminCheatsCloseBtn" class="text-white/60 hover:text-white text-2xl leading-none">&times;</button>
+      </div>
+      <div class="space-y-3 text-sm">
+        <div>
+          <label class="block text-xs text-emerald-200 mb-1">Add Gold</label>
+          <div class="flex gap-2">
+            <input id="betaCheatGoldInput" type="number" value="100" class="flex-1 px-2 py-1 rounded bg-white/10 border border-white/20 text-sm" />
+            <button id="betaCheatAddGoldBtn" class="bg-yellow-500 hover:bg-yellow-400 text-black px-3 py-1 rounded font-bold text-xs">Add</button>
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs text-emerald-200 mb-1">Set Hearts (max 9)</label>
+          <div class="flex gap-2">
+            <input id="betaCheatHeartsInput" type="number" value="3" min="0" max="9" class="flex-1 px-2 py-1 rounded bg-white/10 border border-white/20 text-sm" />
+            <button id="betaCheatSetHeartsBtn" class="bg-rose-500 hover:bg-rose-400 text-white px-3 py-1 rounded font-bold text-xs">Set</button>
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs text-emerald-200 mb-1">Skip to Floor (1-9)</label>
+          <div class="flex gap-2">
+            <input id="betaCheatFloorInput" type="number" value="9" min="1" max="9" class="flex-1 px-2 py-1 rounded bg-white/10 border border-white/20 text-sm" />
+            <button id="betaCheatSkipFloorBtn" class="bg-purple-500 hover:bg-purple-400 text-white px-3 py-1 rounded font-bold text-xs">Skip</button>
+          </div>
+        </div>
+        <hr class="border-white/10" />
+        <button id="betaCheatTriggerForkBtn" class="w-full bg-blue-600 hover:bg-blue-500 px-3 py-2 rounded font-bold text-sm">&#128640; Trigger fork (win current floor)</button>
+        <button id="betaCheatWinRoundBtn" class="w-full bg-emerald-600 hover:bg-emerald-500 px-3 py-2 rounded font-bold text-sm">&#9989; Win current round</button>
+        <button id="betaCheatLoseRoundBtn" class="w-full bg-rose-600 hover:bg-rose-500 px-3 py-2 rounded font-bold text-sm">&#10060; Lose current round</button>
+        <hr class="border-white/10" />
+        <button id="betaCheatGetAllConsumablesBtn" class="w-full bg-amber-600 hover:bg-amber-500 px-3 py-2 rounded font-bold text-sm">&#127881; Stack consumables (+10 each)</button>
+        <button id="betaCheatGetAllJokersBtn" class="w-full bg-purple-600 hover:bg-purple-500 px-3 py-2 rounded font-bold text-sm">&#127183; Equip 2 random jokers</button>
+        <button id="betaCheatGetAllRelicsBtn" class="w-full bg-pink-600 hover:bg-pink-500 px-3 py-2 rounded font-bold text-sm">&#128081; Grant all relics</button>
+        <button id="betaCheatAddShardBtn" class="w-full bg-red-600 hover:bg-red-500 px-3 py-2 rounded font-bold text-sm">&#128147; +1 Heart Shard</button>
+        <button id="betaCheatRevealHandsBtn" class="w-full bg-cyan-600 hover:bg-cyan-500 px-3 py-2 rounded font-bold text-sm">&#128064; Log all opponents' hands</button>
+        <button id="betaCheatRefillHandBtn" class="w-full bg-green-600 hover:bg-green-500 px-3 py-2 rounded font-bold text-sm">&#127183; Top up hand to 8 cards</button>
       </div>
     </div>
   </div>
@@ -714,6 +807,169 @@
     document.getElementById('cosmetics').classList.add('hidden');
     document.getElementById('lobby').classList.remove('hidden');
   });
+</script>
+<script>
+  // ============ Profile panel logic ============
+  (function() {
+    let _profileReturnPanel = 'lobby';
+    function getAuthToken() {
+      try { return localStorage.getItem('lugen-auth-token') || null; }
+      catch (e) { return null; }
+    }
+    function profileVisiblePanels() {
+      // List all panel IDs that might be visible — return first one that is.
+      const panels = ['lobby', 'betaTesting', 'cosmetics'];
+      for (const id of panels) {
+        const el = document.getElementById(id);
+        if (el && !el.classList.contains('hidden')) return id;
+      }
+      return 'lobby';
+    }
+    function hideKnownPanels() {
+      const ids = ['lobby', 'betaTesting', 'cosmetics', 'profile'];
+      for (const id of ids) {
+        const el = document.getElementById(id);
+        if (el) el.classList.add('hidden');
+      }
+    }
+    function openProfile() {
+      const token = getAuthToken();
+      if (!token) return;  // not signed in
+      _profileReturnPanel = profileVisiblePanels();
+      hideKnownPanels();
+      document.getElementById('profile').classList.remove('hidden');
+      loadProfileData();
+    }
+    function closeProfile() {
+      document.getElementById('profile').classList.add('hidden');
+      const back = document.getElementById(_profileReturnPanel);
+      if (back) back.classList.remove('hidden');
+      else document.getElementById('lobby').classList.remove('hidden');
+    }
+    async function loadProfileData() {
+      const token = getAuthToken();
+      if (!token) return;
+      // /api/me — user + modifier stats
+      try {
+        const r = await fetch('/api/me', { headers: { 'Authorization': 'Bearer ' + token } });
+        if (!r.ok) return;
+        const data = await r.json();
+        renderUserStats(data.user || {}, data.modifierStats || []);
+      } catch (e) {}
+      // /api/beta/run-history
+      try {
+        const r2 = await fetch('/api/beta/run-history', { headers: { 'Authorization': 'Bearer ' + token } });
+        if (r2.ok) {
+          const d2 = await r2.json();
+          renderBetaStats(d2.history || []);
+        }
+      } catch (e) {}
+    }
+    function renderUserStats(user, mods) {
+      document.getElementById('profileUsername').textContent = user.username || '—';
+      const lines = [];
+      const total = user.games_played || 0;
+      const won = user.games_won || 0;
+      const lost = user.games_lost || 0;
+      const winRate = total > 0 ? Math.round((won / total) * 100) : 0;
+      lines.push('<div><b>Total games:</b> ' + total + ' (W ' + won + ' / L ' + lost + ', ' + winRate + '% win rate)</div>');
+      lines.push('<div><b>Classic mode:</b> ' + (user.classic_played || 0) + ' played, ' +
+                 (user.classic_won || 0) + ' won, ' + (user.classic_lost || 0) + ' lost</div>');
+      lines.push("<div><b>Liar's Bar mode:</b> " + (user.liarsbar_played || 0) + ' played, ' +
+                 (user.liarsbar_won || 0) + ' won, ' + (user.liarsbar_lost || 0) + ' lost — ' +
+                 (user.liarsbar_eliminations || 0) + ' eliminations</div>');
+      document.getElementById('profileMultiplayerStats').innerHTML = lines.join('');
+
+      const modsDiv = document.getElementById('profileModifierStats');
+      if (!mods || mods.length === 0) {
+        modsDiv.innerHTML = '<p class="italic text-white/50">No modifier games played yet.</p>';
+      } else {
+        const rows = mods.map(m => {
+          const k = m.modifier_key || '?';
+          const a = m.games_active || 0;
+          const w = m.games_won || 0;
+          const wr = a > 0 ? Math.round((w / a) * 100) : 0;
+          return '<div><b>' + escapeHtml(k) + ':</b> ' + a + ' games, ' + w + ' won (' + wr + '%)</div>';
+        });
+        modsDiv.innerHTML = rows.join('');
+      }
+    }
+    function renderBetaStats(history) {
+      const stats = document.getElementById('profileBetaStats');
+      const list = document.getElementById('profileBetaHistory');
+      if (!history || history.length === 0) {
+        stats.innerHTML = '<span class="italic text-white/50">No runs recorded yet.</span>';
+        list.innerHTML = '';
+        return;
+      }
+      const total = history.length;
+      const wins = history.filter(h => h.result === 'won').length;
+      const maxFloor = Math.max.apply(null, history.map(h => h.maxFloor || 1));
+      stats.innerHTML = '<div><b>Total runs:</b> ' + total + ' (' + wins + ' won, ' + (total - wins) + ' lost)</div>' +
+                        '<div><b>Best floor reached:</b> ' + maxFloor + '</div>';
+      const rows = history.slice(0, 10).map(h => {
+        const won = h.result === 'won';
+        const tone = won ? 'text-emerald-300' : 'text-rose-300';
+        const date = h.date ? new Date(h.date).toLocaleDateString() : '';
+        return '<div class="flex items-center justify-between text-xs bg-black/30 px-3 py-1.5 rounded">' +
+          '<span class="font-bold ' + tone + '">' + (won ? 'WON' : 'LOST') + '</span>' +
+          '<span>' + escapeHtml(h.characterName || h.characterId || '?') + '</span>' +
+          '<span class="text-white/60">Floor ' + h.maxFloor + '</span>' +
+          '<span class="text-white/40">' + escapeHtml(date) + '</span>' +
+        '</div>';
+      });
+      list.innerHTML = rows.join('');
+    }
+    function escapeHtml(s) {
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    async function changeUsername() {
+      const input = document.getElementById('profileUsernameInput');
+      const msg = document.getElementById('profileUsernameMsg');
+      const newName = (input.value || '').trim();
+      if (!newName) { msg.textContent = 'Enter a new username.'; msg.className = 'text-xs mt-2 text-rose-300'; return; }
+      const token = getAuthToken();
+      if (!token) { msg.textContent = 'Not signed in.'; msg.className = 'text-xs mt-2 text-rose-300'; return; }
+      msg.textContent = 'Updating...';
+      msg.className = 'text-xs mt-2 text-emerald-300';
+      try {
+        const r = await fetch('/api/me/username', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+          body: JSON.stringify({ username: newName })
+        });
+        const data = await r.json();
+        if (!r.ok) {
+          msg.textContent = data.error || 'Could not change username.';
+          msg.className = 'text-xs mt-2 text-rose-300';
+          return;
+        }
+        msg.textContent = 'Username updated!';
+        msg.className = 'text-xs mt-2 text-emerald-300';
+        // Update auth bar
+        const ub = document.getElementById('authUsername');
+        if (ub) ub.textContent = data.user.username;
+        const pn = document.getElementById('profileUsername');
+        if (pn) pn.textContent = data.user.username;
+        input.value = '';
+      } catch (e) {
+        msg.textContent = 'Network error.';
+        msg.className = 'text-xs mt-2 text-rose-300';
+      }
+    }
+    // Wire up
+    const usernameBtn = document.getElementById('authUsernameBtn');
+    if (usernameBtn) usernameBtn.addEventListener('click', openProfile);
+    const back = document.getElementById('profileBackBtn');
+    if (back) back.addEventListener('click', closeProfile);
+    const changeBtn = document.getElementById('profileChangeUsernameBtn');
+    if (changeBtn) changeBtn.addEventListener('click', changeUsername);
+    const input = document.getElementById('profileUsernameInput');
+    if (input) input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') changeUsername();
+    });
+  })();
 </script>
 <script src="/client.js"></script>
 <script src="/beta.js"></script>

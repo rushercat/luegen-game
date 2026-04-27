@@ -58,6 +58,53 @@ function isValidUsername(name) {
   return typeof name === 'string' && /^[a-zA-Z0-9_-]{3,20}$/.test(name.trim());
 }
 
+// Normalize a username for slur-filter comparison: lowercase, strip
+// digits/symbols, collapse common letter substitutions.
+function normalizeForFilter(s) {
+  return String(s).toLowerCase()
+    .replace(/0/g, 'o')
+    .replace(/1/g, 'i')
+    .replace(/!/g, 'i')
+    .replace(/\|/g, 'i')
+    .replace(/3/g, 'e')
+    .replace(/4/g, 'a')
+    .replace(/@/g, 'a')
+    .replace(/5/g, 's')
+    .replace(/7/g, 't')
+    .replace(/8/g, 'b')
+    .replace(/[^a-z]/g, '');
+}
+
+// Substrings forbidden anywhere in a username (matched after normalization).
+// Add or remove entries here as community standards evolve.
+const PROHIBITED_SUBSTRINGS = [
+  'nigg', 'nigga', 'niger',
+  'fagg', 'faggot',
+  'kike',
+  'spic',
+  'chink',
+  'gook',
+  'wetback',
+  'tranny',
+  'retard',
+  'cunt',
+  'whore',
+  'rapist',
+  'pedo',
+  'pedophile',
+  'nazi',
+  'hitler',
+  'kkk'
+];
+
+function isProhibitedUsername(name) {
+  const norm = normalizeForFilter(name);
+  for (const sub of PROHIBITED_SUBSTRINGS) {
+    if (norm.includes(sub)) return true;
+  }
+  return false;
+}
+
 function sanitizeUsername(s) {
   return String(s || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 20);
 }
@@ -92,6 +139,7 @@ async function signup(username, password) {
   username = String(username || '').trim();
   password = String(password || '');
   if (!isValidUsername(username)) throw new Error('Username must be 3–20 chars: letters, digits, _ or -.');
+  if (isProhibitedUsername(username)) throw new Error('That username is not allowed.');
   if (password.length < MIN_PASSWORD_LEN) throw new Error(`Password must be at least ${MIN_PASSWORD_LEN} characters.`);
   const lower = username.toLowerCase();
   const { data: existing } = await supabase
@@ -375,6 +423,37 @@ async function grantAchievement(userId, achievementId) {
   return { owned: cur.owned, achievements: next };
 }
 
+// ---- Username change (with slur filter + uniqueness) ----
+
+async function changeUsername(userId, newUsername) {
+  if (!enabled) throw new Error('Accounts are disabled on this server.');
+  if (!userId) throw new Error('Not signed in.');
+  newUsername = String(newUsername || '').trim();
+  if (!isValidUsername(newUsername)) {
+    throw new Error('Username must be 3–20 chars: letters, digits, _ or -.');
+  }
+  if (isProhibitedUsername(newUsername)) {
+    throw new Error('That username is not allowed.');
+  }
+  const lower = newUsername.toLowerCase();
+  const { data: existing } = await supabase
+    .from('users')
+    .select('id')
+    .eq('username_lower', lower)
+    .maybeSingle();
+  if (existing && existing.id !== userId) {
+    throw new Error('Username already taken.');
+  }
+  const { data: updated, error } = await supabase
+    .from('users')
+    .update({ username: newUsername, username_lower: lower })
+    .eq('id', userId)
+    .select()
+    .single();
+  if (error) throw new Error('Could not change username: ' + error.message);
+  return updated;
+}
+
 // ---- Phase 7: beta run history ----
 
 const RUN_HISTORY_CAP = 20;
@@ -434,5 +513,7 @@ module.exports = {
   grantCosmetic,
   grantAchievement,
   getBetaRunHistory,
-  recordBetaRun
+  recordBetaRun,
+  changeUsername,
+  isProhibitedUsername
 };

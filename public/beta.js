@@ -327,6 +327,8 @@
 
   const HEART_SHARDS_REQUIRED = 3;     // 3 shards = +1 Heart
   const LEDGER_GOLD_MULT = 1.25;       // The Ledger relic multiplier
+  const BURN_CAP = 8;                  // Max burned cards per round before recycling
+  const TREASURE_CHANCE_ACT_III = 0.33; // Act III non-boss floors swap Reward for Treasure
 
   // Phase 5: jokers — passive/triggered perks held in 2 slots
   const JOKER_CATALOG = {
@@ -402,6 +404,10 @@
       enabled: true,
       type: 'service',
     },
+    { id: 'spikedWire',   name: 'Spiked Wire',   price: 30,  desc: 'Apply Spiked to a run-deck card (on pickup, taker draws +1).', enabled: true, type: 'service' },
+    { id: 'steelPlating', name: 'Steel Plating', price: 50,  desc: 'Apply Steel to a run-deck card (immune to Glass burns and many effects).', enabled: true, type: 'service' },
+    { id: 'mirageLens',   name: 'Mirage Lens',   price: 200, desc: 'Apply Mirage to a run-deck card (one-time wildcard, removed after play).', enabled: true, type: 'service' },
+    { id: 'stripper',     name: 'Stripper',     price: 60,  desc: 'Permanently remove one card from your run deck (no Jacks).', enabled: true, type: 'service' },
     { id: 'tracer',        name: 'Tracer',         price: 40,  desc: 'See the top 3 cards of the draw pile and rearrange them.', enabled: true, type: 'service' },
     { id: 'devilsBargain', name: 'Devil\'s Bargain', price: 55, desc: 'Drop a hand card to the bottom of the draw pile; draw the top card with the Cursed affix.', enabled: true, type: 'service' },
     { id: 'magnet',        name: 'Magnet',         price: 75,  desc: 'Give one hand card (your choice, not Steel) to a random opponent.', enabled: true, type: 'service' },
@@ -633,6 +639,7 @@
       doubletalkUsedThisRound: false,
       sleightUsedThisRound: false,
       ironStomachBurned: [],   // Phase 7+: human's run-deck card IDs burned by Glass this round
+      burnedCards: [],         // Phase 8+: cards burned this round (for burn cap recycling)
       gameOver: false,
       challengeOpen: false,
       challengerIdx: -1,
@@ -1237,20 +1244,21 @@
     render();
 
     setTimeout(() => {
-      // Phase 5: Glass on-reveal — each Glass card in the played stack burns
-      // itself + 2 random non-Steel pile cards.
+      // Phase 5: Glass on-reveal — burn the Glass card + 2 random non-Steel pile cards.
       // Phase 7+: Iron Stomach tracks human's run-deck cards as they burn.
+      // Phase 8+: BURN_CAP — when total burned in round exceeds cap, all burned
+      // cards (including this trigger's) shuffle back into the draw pile.
       const glassPlayed = playedCards.filter(c => c.affix === 'glass').length;
       if (glassPlayed > 0) {
-        let burned = 0;
         const ironOn = hasRelic('ironStomach');
+        const burnedThisTrigger = [];
         for (let g = 0; g < glassPlayed; g++) {
           const glassIdx = state.pile.findIndex(c => c.affix === 'glass');
           if (glassIdx >= 0) {
             const bc = state.pile[glassIdx];
             if (ironOn && bc.owner === 0) state.ironStomachBurned.push(bc.id);
+            burnedThisTrigger.push(bc);
             state.pile.splice(glassIdx, 1);
-            burned++;
           }
           for (let i = 0; i < GLASS_BURN_RANDOM; i++) {
             const burnable = [];
@@ -1261,11 +1269,21 @@
             const pick = burnable[Math.floor(Math.random() * burnable.length)];
             const bc2 = state.pile[pick];
             if (ironOn && bc2.owner === 0) state.ironStomachBurned.push(bc2.id);
+            burnedThisTrigger.push(bc2);
             state.pile.splice(pick, 1);
-            burned++;
           }
         }
-        if (burned > 0) log('Glass burns ' + burned + ' cards from the pile.');
+        if (burnedThisTrigger.length > 0) {
+          log('Glass burns ' + burnedThisTrigger.length + ' cards from the pile.');
+          state.burnedCards.push(...burnedThisTrigger);
+          // Burn cap check: if total exceeds cap, recycle all burned -> draw pile
+          if (state.burnedCards.length > BURN_CAP) {
+            const recycled = state.burnedCards.length;
+            state.drawPile = shuffle(state.drawPile.concat(state.burnedCards));
+            state.burnedCards = [];
+            log('Burn cap exceeded — ' + recycled + ' burned cards recycled into the draw pile.');
+          }
+        }
       }
 
       const doSpikedDraws = (takerIdx) => {
@@ -1525,6 +1543,7 @@
   function render() {
     if (!state) return;
 
+    refreshAdminButton();
     document.getElementById('betaTarget').textContent =
       (state.foggyHidden && runState && runState.currentFloorModifier === 'foggy') ? '?' : state.targetRank;
     document.getElementById('betaPileSize').textContent = state.pile.length;
@@ -1641,6 +1660,158 @@
 
   function closeInfoModal() {
     document.getElementById('betaInfoModal').classList.add('hidden');
+  }
+
+  // ============================================================
+  // Phase 8+: Admin cheats (only available to flagged admin accounts)
+  // ============================================================
+
+  function isAdminMode() {
+    return isCurrentUserAdmin();
+  }
+
+  function adminAddGold(n) {
+    if (!runState) return;
+    runState.gold += n;
+    log('Admin: +' + n + 'g.');
+    render();
+  }
+
+  function adminSetHearts(n) {
+    if (!runState) return;
+    n = Math.max(0, Math.min(9, n | 0));
+    runState.hearts = n;
+    log('Admin: hearts set to ' + n + '.');
+    if (state) render();
+  }
+
+  function adminSkipToFloor(targetFloor) {
+    if (!runState) return;
+    targetFloor = Math.max(1, Math.min(TOTAL_FLOORS, targetFloor | 0));
+    runState.currentFloor = targetFloor;
+    runState.roundsWon = new Array(NUM_PLAYERS).fill(0);
+    runState.loadedDieUsedThisFloor = false;
+    runState.tattletaleChargesThisFloor =
+      hasJoker('tattletale') ? TATTLETALE_CHARGES_PER_FLOOR : 0;
+    setMaxFloorReached(targetFloor);
+    if (targetFloor >= 4 && !isBossFloor(targetFloor)) {
+      const ids = Object.keys(FLOOR_MODIFIERS);
+      runState.currentFloorModifier = ids[Math.floor(Math.random() * ids.length)];
+    } else {
+      runState.currentFloorModifier = null;
+    }
+    assignBotPersonalities();
+    log('Admin: jumped to Floor ' + targetFloor + '.');
+    closeAdminCheats();
+    showFork(Math.max(1, targetFloor - 1), true, 0, 'Admin floor skip');
+  }
+
+  function adminTriggerFork() {
+    if (!runState) return;
+    if (state) {
+      state.gameOver = true;
+      clearAllTimers();
+    }
+    log('Admin: forcing fork (current floor counted as won).');
+    closeAdminCheats();
+    endFloor(true, 'Admin cheat: floor won.', 0);
+  }
+
+  function adminWinRound() {
+    if (!state) return;
+    if (state.gameOver) return;
+    log('Admin: forcing round win.');
+    closeAdminCheats();
+    state.gameOver = true;
+    clearAllTimers();
+    endRound(0, 'Admin cheat: round won.');
+  }
+
+  function adminLoseRound() {
+    if (!state) return;
+    if (state.gameOver) return;
+    log('Admin: forcing round loss.');
+    closeAdminCheats();
+    state.gameOver = true;
+    clearAllTimers();
+    endRound(1, 'Admin cheat: round lost.');
+  }
+
+  function adminStackConsumables() {
+    if (!runState) return;
+    runState.inventory.smokeBomb = (runState.inventory.smokeBomb || 0) + 10;
+    runState.inventory.counterfeit = (runState.inventory.counterfeit || 0) + 10;
+    runState.inventory.jackBeNimble = (runState.inventory.jackBeNimble || 0) + 10;
+    log('Admin: +10 of each consumable.');
+    render();
+  }
+
+  function adminEquipJokers() {
+    if (!runState) return;
+    const jokerIds = Object.keys(JOKER_CATALOG);
+    for (let i = 0; i < runState.jokers.length; i++) {
+      const id = jokerIds[Math.floor(Math.random() * jokerIds.length)];
+      runState.jokers[i] = { ...JOKER_CATALOG[id] };
+      if (id === 'tattletale') {
+        runState.tattletaleChargesThisFloor = TATTLETALE_CHARGES_PER_FLOOR;
+      }
+    }
+    log('Admin: random jokers equipped.');
+    render();
+  }
+
+  function adminGrantAllRelics() {
+    if (!runState) return;
+    runState.relics = Object.keys(RELIC_CATALOG);
+    log('Admin: all relics granted.');
+    render();
+  }
+
+  function adminAddShard() {
+    if (!runState) return;
+    runState.heartShards = (runState.heartShards || 0) + 1;
+    if (runState.heartShards >= HEART_SHARDS_REQUIRED) {
+      runState.hearts++;
+      runState.heartShards = 0;
+      log('Admin: heart restored from shards!');
+    } else {
+      log('Admin: +1 shard (' + runState.heartShards + '/' + HEART_SHARDS_REQUIRED + ').');
+    }
+    render();
+  }
+
+  function adminRevealHands() {
+    if (!state) return;
+    for (let i = 1; i < NUM_PLAYERS; i++) {
+      if (state.eliminated[i] || state.finished[i]) continue;
+      const cards = state.hands[i].map(c => c.rank + (c.affix ? '*' : '')).join(', ');
+      log('Admin reveal — ' + playerLabel(i) + ': ' + cards);
+    }
+  }
+
+  function adminRefillHand() {
+    if (!state) return;
+    while (state.hands[0].length < 8 && state.drawPile.length > 0) {
+      state.hands[0].push(state.drawPile.pop());
+    }
+    log('Admin: hand topped up to ' + state.hands[0].length + ' cards.');
+    render();
+  }
+
+  function openAdminCheats() {
+    if (!isAdminMode()) return;
+    document.getElementById('betaAdminCheatsModal').classList.remove('hidden');
+  }
+  function closeAdminCheats() {
+    const m = document.getElementById('betaAdminCheatsModal');
+    if (m) m.classList.add('hidden');
+  }
+
+  function refreshAdminButton() {
+    const btn = document.getElementById('betaAdminCheatsBtn');
+    if (!btn) return;
+    if (isAdminMode()) btn.classList.remove('hidden');
+    else btn.classList.add('hidden');
   }
 
   // Phase 5: Tattletale — auto-target the bot with the most cards, then
@@ -2174,11 +2345,20 @@
     document.getElementById('betaEvent').classList.add('hidden');
     const cs = document.getElementById('betaCharSelect');
     if (cs) cs.classList.add('hidden');
+    const tr = document.getElementById('betaTreasure');
+    if (tr) tr.classList.add('hidden');
   }
 
   function showFork(floorJustFinished, humanWonFloor, winnerIdx, lastRoundMessage) {
     hideAllPanels();
     document.getElementById('betaResult').classList.add('hidden');
+
+    // Phase 8+: Act III non-boss floors get a chance for Treasure (replaces Reward)
+    runState.forkOfferTreasure = (
+      runState.currentFloor >= 7 &&
+      runState.currentFloor <= 8 &&
+      Math.random() < TREASURE_CHANCE_ACT_III
+    );
 
     const banner = document.getElementById('betaForkBanner');
     if (humanWonFloor) {
@@ -2200,6 +2380,19 @@
     document.getElementById('betaForkHearts').textContent = heartsString(runState.hearts);
     document.getElementById('betaForkGold').textContent = runState.gold;
     document.getElementById('betaForkInventory').textContent = totalInventory();
+    // Phase 8+: swap Reward button visuals for Treasure on lucky Act III floors
+    const rewardBtn = document.getElementById('betaForkRewardBtn');
+    if (rewardBtn) {
+      if (runState.forkOfferTreasure) {
+        rewardBtn.innerHTML = '<div class="text-2xl font-bold mb-1">&#128137; Treasure</div>' +
+          '<div class="text-sm opacity-80">Free relic from a treasure pool.</div>';
+        rewardBtn.className = 'bg-amber-700 hover:bg-amber-600 p-6 rounded-xl text-left transition';
+      } else {
+        rewardBtn.innerHTML = '<div class="text-2xl font-bold mb-1">&#128176; Reward</div>' +
+          '<div class="text-sm opacity-80">Take 75g, no questions asked.</div>';
+        rewardBtn.className = 'bg-emerald-700 hover:bg-emerald-600 p-6 rounded-xl text-left transition';
+      }
+    }
     document.getElementById('betaFork').classList.remove('hidden');
   }
 
@@ -2210,13 +2403,54 @@
   }
 
   function chooseReward() {
+    if (runState && runState.forkOfferTreasure) {
+      chooseTreasure();
+      return;
+    }
     hideAllPanels();
-    // Reset reward UI to the options state
     document.getElementById('betaRewardOptions').classList.remove('hidden');
     document.getElementById('betaRewardCardPicker').classList.add('hidden');
     document.getElementById('betaRewardConfirm').classList.add('hidden');
     document.getElementById('betaRewardNextFloor').textContent = runState.currentFloor;
     document.getElementById('betaReward').classList.remove('hidden');
+  }
+
+  // Phase 8+: Treasure node — pick a free relic from 2 random unowned ones
+  function chooseTreasure() {
+    hideAllPanels();
+    const owned = (runState.relics || []);
+    const allRelicIds = Object.keys(RELIC_CATALOG);
+    const unowned = allRelicIds.filter(id => !owned.includes(id));
+    const offers = shuffle(unowned).slice(0, Math.min(2, unowned.length));
+
+    const list = document.getElementById('betaTreasureOffers');
+    if (!list) return;
+    list.innerHTML = '';
+    if (offers.length === 0) {
+      list.innerHTML = '<p class="text-rose-300 text-center">You already own every relic!</p>';
+    } else {
+      for (const id of offers) {
+        const r = RELIC_CATALOG[id];
+        const btn = document.createElement('button');
+        btn.className = 'w-full bg-amber-700 hover:bg-amber-600 transition p-4 rounded-xl text-left mb-2';
+        btn.innerHTML = '<div class="text-xl font-bold mb-1">' + escapeHtml(r.name) + '</div>' +
+                        '<div class="text-xs opacity-80">' + escapeHtml(r.desc) + '</div>';
+        btn.addEventListener('click', () => {
+          runState.relics = runState.relics || [];
+          runState.relics.push(id);
+          log('Treasure node: gained ' + r.name + '!');
+          document.getElementById('betaTreasureNextFloor').textContent = runState.currentFloor;
+          document.getElementById('betaTreasureChoose').classList.add('hidden');
+          document.getElementById('betaTreasureConfirm').classList.remove('hidden');
+          document.getElementById('betaTreasureConfirmText').textContent = 'You gained ' + r.name + '.';
+        });
+        list.appendChild(btn);
+      }
+    }
+    document.getElementById('betaTreasureChoose').classList.remove('hidden');
+    document.getElementById('betaTreasureConfirm').classList.add('hidden');
+    document.getElementById('betaTreasureNextFloor').textContent = runState.currentFloor;
+    document.getElementById('betaTreasure').classList.remove('hidden');
   }
 
   // Phase 5: take the gold reward
@@ -2333,6 +2567,10 @@
             else if (item.id === 'tracer') startTracerApply(item);
             else if (item.id === 'devilsBargain') startDevilsBargainApply(item);
             else if (item.id === 'magnet') startMagnetApply(item);
+            else if (item.id === 'spikedWire') startAffixApply(item, 'spiked');
+            else if (item.id === 'steelPlating') startAffixApply(item, 'steel');
+            else if (item.id === 'mirageLens') startAffixApply(item, 'mirage');
+            else if (item.id === 'stripper') startStripperApply(item);
           } else if (item.type === 'relic') {
             if (hasRelic(item.id)) return;
             runState.gold -= item.price;
@@ -2372,6 +2610,48 @@
   // ============================================================
   // Phase 5: Shop services — Glass Shard and Forger
   // ============================================================
+
+  // Phase 8+: generic affix applicator for Spiked Wire / Steel Plating / Mirage Lens
+  function startAffixApply(item, affixId) {
+    const eligible = runState.runDeck.filter(c => !c.affix);
+    if (eligible.length === 0) {
+      log(item.name + ': no unaffixed run-deck cards.');
+      return;
+    }
+    showServicePicker({
+      title: item.name + ' — pick a run-deck card to apply ' + affixId,
+      cards: eligible,
+      onPick: (cardId) => {
+        const card = runState.runDeck.find(c => c.id === cardId);
+        if (!card) return;
+        runState.gold -= item.price;
+        card.affix = affixId;
+        log(item.name + ' applied to ' + card.rank + '. (-' + item.price + 'g)');
+        closeServicePicker();
+        renderShop();
+      },
+    });
+  }
+
+  // Phase 8+: Stripper — remove a card from run deck permanently
+  function startStripperApply(item) {
+    const eligible = runState.runDeck.filter(c => c.rank !== 'J');
+    if (eligible.length <= 4) {
+      log('Stripper: run deck too small to remove from (min 4 cards).');
+      return;
+    }
+    showServicePicker({
+      title: 'Stripper — pick a card to remove from your run deck (permanent)',
+      cards: eligible,
+      onPick: (cardId) => {
+        runState.gold -= item.price;
+        runState.runDeck = runState.runDeck.filter(c => c.id !== cardId);
+        log('Stripper: removed a card from your run deck. Run deck size: ' + runState.runDeck.length + '. (-' + item.price + 'g)');
+        closeServicePicker();
+        renderShop();
+      },
+    });
+  }
 
   function startGlassShardApply(item) {
     const eligible = runState.runDeck.filter(c => !c.affix);
@@ -2748,11 +3028,56 @@
   document.getElementById('betaShopContinueBtn').addEventListener('click', continueAfterFork);
   document.getElementById('betaRewardContinueBtn').addEventListener('click', continueAfterFork);
   document.getElementById('betaEventContinueBtn').addEventListener('click', continueAfterFork);
+  const _trCont = document.getElementById('betaTreasureContinueBtn');
+  if (_trCont) _trCont.addEventListener('click', continueAfterFork);
   document.getElementById('betaRewardGoldBtn').addEventListener('click', takeRewardGold);
   document.getElementById('betaRewardUpgradeBtn').addEventListener('click', startRewardUpgrade);
   document.getElementById('betaRewardCancelUpgradeBtn').addEventListener('click', cancelRewardUpgrade);
 
   document.getElementById('betaUseSmokeBtn').addEventListener('click', useSmokeBomb);
+
+  // Phase 8+: admin cheats wiring
+  const _admBtn = document.getElementById('betaAdminCheatsBtn');
+  if (_admBtn) _admBtn.addEventListener('click', openAdminCheats);
+  const _admClose = document.getElementById('betaAdminCheatsCloseBtn');
+  if (_admClose) _admClose.addEventListener('click', closeAdminCheats);
+  const _admModal = document.getElementById('betaAdminCheatsModal');
+  if (_admModal) _admModal.addEventListener('click', (e) => {
+    if (e.target === _admModal) closeAdminCheats();
+  });
+  const _addGold = document.getElementById('betaCheatAddGoldBtn');
+  if (_addGold) _addGold.addEventListener('click', () => {
+    const v = parseInt(document.getElementById('betaCheatGoldInput').value, 10) || 0;
+    adminAddGold(v);
+  });
+  const _setHearts = document.getElementById('betaCheatSetHeartsBtn');
+  if (_setHearts) _setHearts.addEventListener('click', () => {
+    const v = parseInt(document.getElementById('betaCheatHeartsInput').value, 10) || 0;
+    adminSetHearts(v);
+  });
+  const _skipFloor = document.getElementById('betaCheatSkipFloorBtn');
+  if (_skipFloor) _skipFloor.addEventListener('click', () => {
+    const v = parseInt(document.getElementById('betaCheatFloorInput').value, 10) || 1;
+    adminSkipToFloor(v);
+  });
+  const _trigFork = document.getElementById('betaCheatTriggerForkBtn');
+  if (_trigFork) _trigFork.addEventListener('click', adminTriggerFork);
+  const _winRound = document.getElementById('betaCheatWinRoundBtn');
+  if (_winRound) _winRound.addEventListener('click', adminWinRound);
+  const _loseRound = document.getElementById('betaCheatLoseRoundBtn');
+  if (_loseRound) _loseRound.addEventListener('click', adminLoseRound);
+  const _allCons = document.getElementById('betaCheatGetAllConsumablesBtn');
+  if (_allCons) _allCons.addEventListener('click', adminStackConsumables);
+  const _allJokers = document.getElementById('betaCheatGetAllJokersBtn');
+  if (_allJokers) _allJokers.addEventListener('click', adminEquipJokers);
+  const _allRelics = document.getElementById('betaCheatGetAllRelicsBtn');
+  if (_allRelics) _allRelics.addEventListener('click', adminGrantAllRelics);
+  const _addShard = document.getElementById('betaCheatAddShardBtn');
+  if (_addShard) _addShard.addEventListener('click', adminAddShard);
+  const _revealHands = document.getElementById('betaCheatRevealHandsBtn');
+  if (_revealHands) _revealHands.addEventListener('click', adminRevealHands);
+  const _refill = document.getElementById('betaCheatRefillHandBtn');
+  if (_refill) _refill.addEventListener('click', adminRefillHand);
 
   // Phase 5+: info modal close handlers
   const _infoClose = document.getElementById('betaInfoCloseBtn');
