@@ -324,8 +324,10 @@
     <div id="betaStatusBar" class="flex flex-wrap justify-between items-center gap-3 bg-black/40 px-4 py-2 rounded-lg mb-4 text-sm">
       <div class="flex items-center gap-3">
         <span>Floor <span id="betaFloor" class="font-bold text-yellow-300">1</span>/9</span>
+        <span id="betaFloorModBadge"></span>
         <span class="text-yellow-300">&#128176; <span id="betaGold" class="font-bold">0</span>g</span>
         <span class="text-emerald-300 text-xs">&#128230; <span id="betaInventoryCount" class="font-bold">0</span></span>
+        <button id="betaDeckInspectorBtn" title="Inspect every card in the game (and its affix)" class="bg-purple-700 hover:bg-purple-600 transition px-2 py-0.5 rounded text-xs font-bold">&#127183; Cards</button>
       </div>
       <div id="betaRoundScore" class="text-xs sm:text-sm">Round score: &mdash;</div>
       <div id="betaHearts" class="text-red-400 text-lg tracking-wider">&hearts;&hearts;&hearts;</div>
@@ -559,6 +561,45 @@
       <p id="betaInfoDesc" class="text-sm text-emerald-100 mb-4"></p>
       <div class="text-center">
         <button id="betaInfoCloseBtn" class="bg-white/10 hover:bg-white/20 px-4 py-2 rounded-lg text-sm">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="betaDeckInspectorModal" class="hidden fixed inset-0 bg-black/80 backdrop-blur z-50 flex items-center justify-center p-4">
+    <div class="bg-slate-800 border-2 border-purple-400 p-6 rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+      <div class="flex items-start justify-between mb-2">
+        <div>
+          <h3 class="text-xl font-bold">Card Inspector</h3>
+          <p class="text-xs text-emerald-200">Every card currently in the round deck. Coloured rings mark affixes.</p>
+        </div>
+        <button id="betaDeckInspectorCloseBtn" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded-lg text-sm">&times;</button>
+      </div>
+
+      <div class="mb-4">
+        <h4 class="text-sm font-bold text-yellow-200 mb-1">Your personal deck (you build this across the run)</h4>
+        <p class="text-xs text-white/60 mb-2">Up to 24 cards. Buy Engraver in shops to add cards, Stripper to remove them. Affixes persist for the whole run.</p>
+        <div id="betaInspectorRunDeck" class="flex flex-wrap gap-2"></div>
+      </div>
+
+      <div class="mb-4">
+        <h4 class="text-sm font-bold text-cyan-200 mb-1">Round deck (live — every card in play right now)</h4>
+        <p class="text-xs text-white/60 mb-2">Per-rank cap of 8 keeps each round balanced no matter how big personal decks grow. Each floor, a few draw-pile cards get random affixes (more per floor).</p>
+        <div id="betaInspectorRoundDeck" class="flex flex-wrap gap-1"></div>
+        <div id="betaInspectorRoundCounts" class="text-xs text-white/70 mt-2"></div>
+      </div>
+
+      <div class="mb-2">
+        <h4 class="text-sm font-bold text-pink-200 mb-1">Affix legend</h4>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+          <div class="flex items-center gap-2"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-yellow-400" style="width:32px;height:44px;">A</div><span>Gilded</span></div>
+          <div class="flex items-center gap-2"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-cyan-400" style="width:32px;height:44px;">A</div><span>Glass</span></div>
+          <div class="flex items-center gap-2"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-red-400" style="width:32px;height:44px;">A</div><span>Spiked</span></div>
+          <div class="flex items-center gap-2"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-purple-500" style="width:32px;height:44px;">A</div><span>Cursed</span></div>
+          <div class="flex items-center gap-2"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-gray-300" style="width:32px;height:44px;">A</div><span>Steel</span></div>
+          <div class="flex items-center gap-2"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-pink-400" style="width:32px;height:44px;">A</div><span>Mirage</span></div>
+          <div class="flex items-center gap-2"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-indigo-400" style="width:32px;height:44px;">A</div><span>Hollow</span></div>
+          <div class="flex items-center gap-2"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-fuchsia-400" style="width:32px;height:44px;">A</div><span>Echo</span></div>
+        </div>
       </div>
     </div>
   </div>

@@ -408,6 +408,7 @@
     { id: 'steelPlating', name: 'Steel Plating', price: 50,  desc: 'Apply Steel to a run-deck card (immune to Glass burns and many effects).', enabled: true, type: 'service' },
     { id: 'mirageLens',   name: 'Mirage Lens',   price: 200, desc: 'Apply Mirage to a run-deck card (one-time wildcard, removed after play).', enabled: true, type: 'service' },
     { id: 'stripper',     name: 'Stripper',     price: 60,  desc: 'Permanently remove one card from your run deck (no Jacks).', enabled: true, type: 'service' },
+    { id: 'engraver',     name: 'Engraver',     price: 80,  desc: 'Add one new vanilla card (A, K, Q, or 10) to your run deck.', enabled: true, type: 'service' },
     { id: 'tracer',        name: 'Tracer',         price: 40,  desc: 'See the top 3 cards of the draw pile and rearrange them.', enabled: true, type: 'service' },
     { id: 'devilsBargain', name: 'Devil\'s Bargain', price: 55, desc: 'Drop a hand card to the bottom of the draw pile; draw the top card with the Cursed affix.', enabled: true, type: 'service' },
     { id: 'magnet',        name: 'Magnet',         price: 75,  desc: 'Give one hand card (your choice, not Steel) to a random opponent.', enabled: true, type: 'service' },
@@ -603,6 +604,16 @@
         for (const c of hand) c.affix = 'glass';
       }
       for (const c of drawPile) c.affix = 'glass';
+    }
+
+    // Per-floor random-affix infusion (skipped on Brittle floors —
+    // Brittle already glassed everything).
+    if (runState && runState.currentFloorModifier !== 'brittle') {
+      const infused = applyFloorAffixesToDrawPile(drawPile, runState.currentFloor || 1);
+      if (infused > 0) {
+        log('Floor ' + (runState.currentFloor || 1) + ' static: ' + infused +
+            ' card' + (infused === 1 ? '' : 's') + ' in the draw pile carry random affixes.');
+      }
     }
 
     // Phase 5: Gambler — first round of a new floor forces a Cursed card
@@ -907,36 +918,67 @@
   // Deck / hand
   // ============================================================
 
+  // Per-rank cap used when syncing all 4 players' run decks into the round deck.
+  // Each player can build their own deck however they like; the round itself
+  // never contains more than this many of any single rank.
+  const ROUND_DECK_RANK_CAP = 8;
+  const BASE_JACKS_PER_ROUND = 6;
+
   function buildDeck() {
-    // Jack-capped composition. Jacks are limited to 6 in the whole deck —
-    // they're "pure bluff" cards in the design. Non-Jack ranks come
-    // entirely from run decks (2 per rank per player × 4 players = 8 each).
-    //   non-J ranks: 0 base + 8 from run decks = 8 each
-    //   Jacks:       6 base (no run-deck contribution) = 6
-    // Total deck size: 4*8 + 6 = 38 cards.
+    // 1) Start with 6 base Jacks (vanilla, no owner) — these are "pure bluff"
+    //    cards that don't come from any player's deck.
     const deck = [];
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < BASE_JACKS_PER_ROUND; i++) {
       deck.push({ rank: 'J', id: 'rd_J_' + i, owner: -1, affix: null });
     }
-    // Each bot's run deck — vanilla in Phase 4, no customization yet
-    for (let bot = 1; bot < NUM_PLAYERS; bot++) {
-      for (const card of buildInitialRunDeck(bot)) {
-        deck.push({ ...card });
+
+    // 2) Gather every player's run deck into per-rank buckets. Each player
+    //    has their own complete deck (12+ cards) and can customize freely;
+    //    the cap below is what keeps a single round balanced.
+    const buckets = { 'A': [], 'K': [], 'Q': [], '10': [], 'J': [] };
+    for (let p = 0; p < NUM_PLAYERS; p++) {
+      const personalDeck = (p === 0)
+        ? runState.runDeck
+        : buildInitialRunDeck(p);
+      for (const card of personalDeck) {
+        if (buckets[card.rank]) buckets[card.rank].push({ ...card });
       }
     }
-    // Human's run deck — the only one that can be customized
-    for (const card of runState.runDeck) {
-      deck.push({ ...card });
+
+    // 3) For each rank, trim to ROUND_DECK_RANK_CAP. Prefer keeping affixed
+    //    cards first (so a player's investment isn't silently dropped), then
+    //    randomize the remaining slots.
+    for (const r of Object.keys(buckets)) {
+      const cards = buckets[r];
+      // Jacks already have 6 base in the deck — let any player-Jacks in but
+      // still respect the cap (base Jacks count toward it).
+      const cap = (r === 'J')
+        ? Math.max(0, ROUND_DECK_RANK_CAP - BASE_JACKS_PER_ROUND)
+        : ROUND_DECK_RANK_CAP;
+      if (cards.length <= cap) {
+        for (const c of cards) deck.push(c);
+        continue;
+      }
+      // Sort: affixed first, then random within each bucket
+      const affixed = shuffle(cards.filter(c => c.affix));
+      const plain   = shuffle(cards.filter(c => !c.affix));
+      const ordered = affixed.concat(plain);
+      for (let i = 0; i < cap; i++) deck.push(ordered[i]);
     }
+
     return shuffle(deck);
   }
 
-  // Phase 4: each player starts with 8 personal cards (2 each of A/K/Q/10).
-  // No Jacks in run decks — Jacks live only in the base round-deck pool.
+  // Each player's personal deck. 12 cards (3 each of A/K/Q/10) — players
+  // can customize via shop services / rewards / consumables. The ROUND_DECK
+  // cap above keeps any one round balanced, so building stacked decks is
+  // safe and meaningful (you bias what's likely to land in play).
+  const RUN_DECK_PER_RANK = 3;
+
   function buildInitialRunDeck(playerIdx) {
     const deck = [];
     for (const r of ['A', 'K', 'Q', '10']) {
-      for (let i = 0; i < 2; i++) {
+      for (let i = 0; i < RUN_DECK_PER_RANK; i++) {
         deck.push({
           rank: r,
           id: 'p' + playerIdx + '_' + r + '_' + i,
@@ -1663,6 +1705,151 @@
   }
 
   // ============================================================
+  // Card Inspector — shows the full deck composition + affixes
+  // ============================================================
+
+  const _AFFIX_NAMES = {
+    gilded: 'Gilded',
+    glass:  'Glass',
+    spiked: 'Spiked',
+    cursed: 'Cursed',
+    steel:  'Steel',
+    mirage: 'Mirage',
+    hollow: 'Hollow',
+    echo:   'Echo',
+  };
+
+  function _makeInspectorCardEl(card, opts) {
+    opts = opts || {};
+    const div = document.createElement('div');
+    let cls = 'card card-face flex items-center justify-center text-xl font-bold text-black rounded';
+    const ring = affixRingClass(card.affix);
+    if (ring) cls += ' ' + ring;
+    else if (opts.markYours && card.owner === 0) cls += ' ring-2 ring-emerald-400';
+    div.className = cls;
+    div.textContent = card.rank;
+    const owner = card.owner === 0 ? 'You' :
+                  card.owner === -1 ? 'Base deck' :
+                  ('Bot ' + card.owner);
+    const affixLabel = card.affix ? (_AFFIX_NAMES[card.affix] || card.affix) : '—';
+    div.title = card.rank + ' — ' + owner + ' — Affix: ' + affixLabel;
+    return div;
+  }
+
+  function renderDeckInspector() {
+    if (!runState) return;
+
+    // 1) Player's run deck — sorted A, K, Q, 10
+    const runDeckDiv = document.getElementById('betaInspectorRunDeck');
+    runDeckDiv.innerHTML = '';
+    const order = ['A', 'K', 'Q', '10', 'J'];
+    const sortedRun = runState.runDeck.slice().sort((a, b) => {
+      const ai = order.indexOf(a.rank), bi = order.indexOf(b.rank);
+      if (ai !== bi) return ai - bi;
+      // affixed cards first within same rank
+      if ((a.affix ? 1 : 0) !== (b.affix ? 1 : 0)) return (b.affix ? 1 : 0) - (a.affix ? 1 : 0);
+      return a.id.localeCompare(b.id);
+    });
+    for (const c of sortedRun) {
+      runDeckDiv.appendChild(_makeInspectorCardEl(c, { markYours: false }));
+    }
+
+    // 2) Round-deck composition — show the LIVE deck (every card currently in
+    //    the round). This includes hands, draw pile, pile, and the last-play
+    //    cards, so per-floor random-affix infusions and mid-round changes are
+    //    reflected accurately. If no round is active yet, fall back to a
+    //    capped preview.
+    const all = [];
+    if (state) {
+      // Live snapshot — all cards currently in play
+      for (const hand of (state.hands || [])) for (const c of hand) all.push({ ...c });
+      for (const c of (state.drawPile || [])) all.push({ ...c });
+      for (const c of (state.pile || [])) all.push({ ...c });
+      if (state.lastPlay && Array.isArray(state.lastPlay.cards)) {
+        for (const c of state.lastPlay.cards) all.push({ ...c });
+      }
+      // De-duplicate by id (lastPlay cards may also live in pile/hands)
+      const seen = new Set();
+      for (let i = all.length - 1; i >= 0; i--) {
+        const id = all[i].id;
+        if (id && seen.has(id)) all.splice(i, 1);
+        else if (id) seen.add(id);
+      }
+    } else {
+      // No live round — preview using the cap logic so the count matches
+      // what would actually be dealt.
+      for (let i = 0; i < 6; i++) {
+        all.push({ rank: 'J', owner: -1, affix: null, id: 'rd_J_' + i });
+      }
+      const buckets = { 'A': [], 'K': [], 'Q': [], '10': [] };
+      for (let p = 0; p < 4; p++) {
+        const personalDeck = (p === 0) ? runState.runDeck : buildInitialRunDeck(p);
+        for (const c of personalDeck) {
+          if (buckets[c.rank]) buckets[c.rank].push({ ...c });
+        }
+      }
+      for (const r of Object.keys(buckets)) {
+        const cards = buckets[r];
+        const cap = 8;
+        if (cards.length <= cap) {
+          for (const c of cards) all.push(c);
+        } else {
+          const affixed = cards.filter(c => c.affix);
+          const plain = cards.filter(c => !c.affix);
+          const ordered = affixed.concat(plain);
+          for (let i = 0; i < cap; i++) all.push(ordered[i]);
+        }
+      }
+    }
+
+    // Sort: rank order, owner asc (you=0 first inside each rank? show base J's first)
+    all.sort((a, b) => {
+      const ai = order.indexOf(a.rank), bi = order.indexOf(b.rank);
+      if (ai !== bi) return ai - bi;
+      if (a.owner !== b.owner) {
+        // your cards first within rank, then bots, then base
+        const wa = (a.owner === 0) ? 0 : (a.owner === -1 ? 9 : a.owner);
+        const wb = (b.owner === 0) ? 0 : (b.owner === -1 ? 9 : b.owner);
+        return wa - wb;
+      }
+      if ((a.affix ? 1 : 0) !== (b.affix ? 1 : 0)) return (b.affix ? 1 : 0) - (a.affix ? 1 : 0);
+      return 0;
+    });
+
+    const roundDeckDiv = document.getElementById('betaInspectorRoundDeck');
+    roundDeckDiv.innerHTML = '';
+    let lastRank = null;
+    for (const c of all) {
+      if (lastRank !== null && c.rank !== lastRank) {
+        const sep = document.createElement('div');
+        sep.className = 'w-full h-1';
+        roundDeckDiv.appendChild(sep);
+      }
+      lastRank = c.rank;
+      roundDeckDiv.appendChild(_makeInspectorCardEl(c, { markYours: true }));
+    }
+
+    // Counts summary
+    const counts = {};
+    for (const r of order) counts[r] = 0;
+    for (const c of all) counts[c.rank] = (counts[c.rank] || 0) + 1;
+    const affixed = all.filter(c => c.affix).length;
+    const summary = order.filter(r => counts[r]).map(r => r + '×' + counts[r]).join('  ·  ');
+    document.getElementById('betaInspectorRoundCounts').textContent =
+      summary + '   —   Total: ' + all.length + ' cards   —   Affixed: ' + affixed;
+  }
+
+  function openDeckInspector() {
+    if (!runState) return;
+    renderDeckInspector();
+    document.getElementById('betaDeckInspectorModal').classList.remove('hidden');
+  }
+
+  function closeDeckInspector() {
+    document.getElementById('betaDeckInspectorModal').classList.add('hidden');
+  }
+
+  // ============================================================
   // Phase 8+: Admin cheats (only available to flagged admin accounts)
   // ============================================================
 
@@ -1875,15 +2062,30 @@
 
   function renderStatusBar() {
     if (!runState) return;
-    let floorText = String(runState.currentFloor);
-    const boss = getBoss(runState.currentFloor);
-    if (boss) {
-      floorText += ' · BOSS: ' + boss.name;
-    } else if (runState.currentFloorModifier && FLOOR_MODIFIERS[runState.currentFloorModifier]) {
-      floorText += ' · ' + FLOOR_MODIFIERS[runState.currentFloorModifier].name;
+    document.getElementById('betaFloor').textContent = runState.currentFloor;
+
+    // Phase 8+: clickable modifier / boss badge — opens the info modal
+    const badge = document.getElementById('betaFloorModBadge');
+    if (badge) {
+      const fresh = badge.cloneNode(false);
+      fresh.id = 'betaFloorModBadge';
+      badge.parentNode.replaceChild(fresh, badge);
+      const boss = getBoss(runState.currentFloor);
+      const mod = runState.currentFloorModifier && FLOOR_MODIFIERS[runState.currentFloorModifier];
+      if (boss) {
+        fresh.innerHTML = '<button class="bg-rose-700 hover:bg-rose-600 transition px-2 py-0.5 rounded text-xs font-bold cursor-pointer">&#128081; BOSS: ' + escapeHtml(boss.name) + '</button>';
+        fresh.querySelector('button').addEventListener('click', () => {
+          showInfoModal(boss.name, 'Boss \u2014 Floor ' + boss.floor, boss.desc);
+        });
+      } else if (mod) {
+        fresh.innerHTML = '<button class="bg-purple-700 hover:bg-purple-600 transition px-2 py-0.5 rounded text-xs font-bold cursor-pointer">' + escapeHtml(mod.name) + '</button>';
+        fresh.querySelector('button').addEventListener('click', () => {
+          showInfoModal(mod.name, 'Floor Modifier', mod.desc);
+        });
+      } else {
+        fresh.innerHTML = '';
+      }
     }
-    document.getElementById('betaFloor').textContent = floorText;
-    if (false) document.getElementById('betaFloor').textContent = runState.currentFloor;
     document.getElementById('betaHearts').textContent = heartsString(runState.hearts) +
       (runState.heartShards > 0 ? ' (' + runState.heartShards + '/' + HEART_SHARDS_REQUIRED + ' shards)' : '');
     document.getElementById('betaGold').textContent = runState.gold;
@@ -1903,6 +2105,33 @@
   function totalInventory() {
     if (!runState) return 0;
     return Object.values(runState.inventory).reduce((a, b) => a + b, 0);
+  }
+
+
+  // Per-floor random-affix infusion: each round, sprinkle some random
+  // affixes onto draw-pile cards. Floor scales the count (more affixes
+  // deeper into the run). Cards that already have an affix are skipped
+  // (so a Banker's Gilded Ace, Brittle modifier, etc. aren't overwritten).
+  const FLOOR_AFFIX_POOL = ['gilded', 'glass', 'spiked', 'cursed',
+                            'steel', 'mirage', 'hollow', 'echo'];
+  function affixCountForFloor(floor) {
+    // floor 1 => 1, floor 2 => 2, ..., floor 9 => 9. Tunable.
+    return Math.max(0, Math.min(9, floor | 0));
+  }
+  function applyFloorAffixesToDrawPile(drawPile, floor) {
+    const target = affixCountForFloor(floor);
+    if (target <= 0 || !drawPile || drawPile.length === 0) return 0;
+    const candidates = drawPile.filter(c => !c.affix);
+    if (candidates.length === 0) return 0;
+    const shuffled = shuffle(candidates);
+    const n = Math.min(target, shuffled.length);
+    let infused = 0;
+    for (let i = 0; i < n; i++) {
+      const affix = FLOOR_AFFIX_POOL[Math.floor(Math.random() * FLOOR_AFFIX_POOL.length)];
+      shuffled[i].affix = affix;
+      infused++;
+    }
+    return infused;
   }
 
   // Phase 5: affix → ring color mapping
@@ -2396,8 +2625,50 @@
     document.getElementById('betaFork').classList.remove('hidden');
   }
 
+  // Phase 8+: rotating shop offer — pick a small subset each shop visit
+  const SHOP_RARITY_WEIGHTS = { Common: 60, Uncommon: 25, Rare: 10, Legendary: 5 };
+  const SHOP_OFFER_CONSUMABLES = 3;
+  const SHOP_OFFER_JOKERS = 3;
+
+  function regenerateShopOffer() {
+    if (!runState) return;
+    // Consumables/services pool — anything not a joker or relic
+    const consumablesPool = SHOP_ITEMS.filter(i => i.type !== 'joker' && i.type !== 'relic');
+    const pickedConsumables = shuffle(consumablesPool).slice(0, SHOP_OFFER_CONSUMABLES);
+
+    // Jokers — rarity-weighted, skip already-equipped
+    const ownedJokerIds = (runState.jokers || []).filter(j => j).map(j => j.id);
+    const jokerPool = SHOP_ITEMS.filter(i => i.type === 'joker' && !ownedJokerIds.includes(i.id));
+    const pickedJokers = [];
+    const remaining = jokerPool.slice();
+    while (pickedJokers.length < SHOP_OFFER_JOKERS && remaining.length > 0) {
+      let totalWeight = 0;
+      for (const j of remaining) {
+        const cat = JOKER_CATALOG[j.id];
+        const rarity = cat ? cat.rarity : 'Common';
+        totalWeight += (SHOP_RARITY_WEIGHTS[rarity] || 1);
+      }
+      let r = Math.random() * totalWeight;
+      let pickedIdx = 0;
+      for (let i = 0; i < remaining.length; i++) {
+        const cat = JOKER_CATALOG[remaining[i].id];
+        const rarity = cat ? cat.rarity : 'Common';
+        r -= (SHOP_RARITY_WEIGHTS[rarity] || 1);
+        if (r <= 0) { pickedIdx = i; break; }
+      }
+      pickedJokers.push(remaining[pickedIdx]);
+      remaining.splice(pickedIdx, 1);
+    }
+
+    // Relics — show all unowned (keep them visible since they're already rare)
+    const relicsPool = SHOP_ITEMS.filter(i => i.type === 'relic');
+
+    runState.shopOffer = [].concat(pickedConsumables, pickedJokers, relicsPool);
+  }
+
   function chooseShop() {
     hideAllPanels();
+    regenerateShopOffer();  // fresh rotation each visit
     renderShop();
     document.getElementById('betaShop').classList.remove('hidden');
   }
@@ -2527,7 +2798,10 @@
     document.getElementById('betaShopNextFloor').textContent = runState.currentFloor;
     const list = document.getElementById('betaShopItems');
     list.innerHTML = '';
-    for (const item of SHOP_ITEMS) {
+    const offer = (runState && runState.shopOffer && runState.shopOffer.length > 0)
+      ? runState.shopOffer
+      : SHOP_ITEMS;
+    for (const item of offer) {
       const isJoker = item.type === 'joker';
       const isRelic = item.type === 'relic';
       const equipped = isJoker && hasJoker(item.id);
@@ -2571,6 +2845,7 @@
             else if (item.id === 'steelPlating') startAffixApply(item, 'steel');
             else if (item.id === 'mirageLens') startAffixApply(item, 'mirage');
             else if (item.id === 'stripper') startStripperApply(item);
+            else if (item.id === 'engraver') startEngraverApply(item);
           } else if (item.type === 'relic') {
             if (hasRelic(item.id)) return;
             runState.gold -= item.price;
@@ -2743,6 +3018,60 @@
       if (card.affix) btn.title = 'Affix: ' + card.affix;
       const id = card.id;
       btn.addEventListener('click', () => opts.onPick(id));
+      list.appendChild(btn);
+    }
+    picker.appendChild(list);
+    const cancel = document.createElement('button');
+    cancel.className = 'bg-white/10 hover:bg-white/20 transition px-4 py-1 rounded text-sm';
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', closeServicePicker);
+    picker.appendChild(cancel);
+    picker.classList.remove('hidden');
+  }
+
+
+  // Engraver — let the player pick a rank to ADD as a new vanilla card
+  // into their run deck. Caps the personal deck at 24 cards so it can't
+  // grow without bound.
+  const RUN_DECK_MAX = 24;
+  function startEngraverApply(item) {
+    if (!runState || !runState.runDeck) return;
+    if (runState.runDeck.length >= RUN_DECK_MAX) {
+      log('Engraver: your run deck is at the cap (' + RUN_DECK_MAX + '). Strip a card first.');
+      return;
+    }
+    const itemsDiv = document.getElementById('betaShopItems');
+    const continueBtn = document.getElementById('betaShopContinueBtn');
+    itemsDiv.classList.add('hidden');
+    continueBtn.classList.add('hidden');
+    let picker = document.getElementById('betaShopServicePicker');
+    if (!picker) {
+      picker = document.createElement('div');
+      picker.id = 'betaShopServicePicker';
+      picker.className = 'mb-6';
+      itemsDiv.parentNode.insertBefore(picker, itemsDiv);
+    }
+    picker.innerHTML = '';
+    const title = document.createElement('p');
+    title.className = 'text-emerald-200 mb-3 text-center font-bold';
+    title.textContent = 'Engraver — pick a rank to add a vanilla card to your run deck';
+    picker.appendChild(title);
+    const list = document.createElement('div');
+    list.className = 'flex flex-wrap gap-2 justify-center mb-4';
+    for (const r of ['A', 'K', 'Q', '10']) {
+      const btn = document.createElement('button');
+      btn.className = 'card card-face flex items-center justify-center text-2xl font-bold text-black rounded cursor-pointer hover:scale-105 transition';
+      btn.textContent = r;
+      btn.addEventListener('click', () => {
+        if (runState.gold < item.price) return;
+        runState.gold -= item.price;
+        const newId = 'p0_' + r + '_eng_' + Date.now() + '_' + Math.floor(Math.random()*1000);
+        runState.runDeck.push({ rank: r, id: newId, owner: 0, affix: null });
+        log('Engraver: added a ' + r + ' to your run deck. Run deck size: ' +
+            runState.runDeck.length + '. (-' + item.price + 'g)');
+        closeServicePicker();
+        renderShop();
+      });
       list.appendChild(btn);
     }
     picker.appendChild(list);
@@ -3089,53 +3418,22 @@
     });
   }
 
-  // Phase 6: resume/restart prompt when re-entering beta with an active run.
-  // The inline script in index.html already toggles betaTesting visibility;
-  // this handler runs in addition to it and surfaces the resume modal when
-  // there's a runState to fall back into.
-  // Phase 7: pause/resume timers when leaving/returning to beta mid-run
-  let _pausedChallenge = false;
-
-  function pauseBetaRun() {
-    if (!state) return;
-    clearAllTimers();
-    const bar = document.getElementById('betaChallengeBar');
-    if (bar) bar.classList.add('hidden');
-    if (state.challengeOpen) {
-      _pausedChallenge = true;
-      state.challengeOpen = false;
-    }
-  }
-
-  function resumeBetaRun() {
-    if (!state || state.gameOver) return;
-    if (_pausedChallenge && state.lastPlay) {
-      _pausedChallenge = false;
-      // Treat the paused challenge as a no-call (timer effectively expired)
-      handlePassNoChallenge(state.lastPlay.playerIdx);
-      return;
-    }
-    // If it's a bot's active turn, schedule its play
-    if (state.currentTurn !== 0 &&
-        !state.eliminated[state.currentTurn] &&
-        !state.finished[state.currentTurn]) {
-      setTimeout(botTurn, BOT_TURN_DELAY_MS);
-    }
-    render();
-  }
-
-  // Hook back-to-lobby button to pause
-  const _betaBackBtnPause = document.getElementById('betaBackBtn');
-  if (_betaBackBtnPause) {
-    _betaBackBtnPause.addEventListener('click', () => {
-      if (runState && state) pauseBetaRun();
+  // Card Inspector — open/close handlers
+  const _inspectorBtn = document.getElementById('betaDeckInspectorBtn');
+  if (_inspectorBtn) _inspectorBtn.addEventListener('click', openDeckInspector);
+  const _inspectorClose = document.getElementById('betaDeckInspectorCloseBtn');
+  if (_inspectorClose) _inspectorClose.addEventListener('click', closeDeckInspector);
+  const _inspectorModal = document.getElementById('betaDeckInspectorModal');
+  if (_inspectorModal) {
+    _inspectorModal.addEventListener('click', (e) => {
+      if (e.target === _inspectorModal) closeDeckInspector();
     });
   }
 
+  // Phase 6: resume/restart prompt when re-entering beta with an active run.
   function showResumeModal() {
     const modal = document.getElementById('betaResumeModal');
     if (!modal || !runState) return;
-    // Populate context line
     const floorEl = document.getElementById('betaResumeFloor');
     const charEl = document.getElementById('betaResumeChar');
     const heartsEl = document.getElementById('betaResumeHearts');
@@ -3152,9 +3450,7 @@
   const _betaTestBtn = document.getElementById('betaTestBtn');
   if (_betaTestBtn) {
     _betaTestBtn.addEventListener('click', () => {
-      // Only prompt if there's an active run worth resuming
       if (runState) showResumeModal();
-      // Phase 7: refresh run history (intro panel)
       renderRunHistory();
     });
   }
@@ -3163,7 +3459,7 @@
   if (_resumeContinueBtn) {
     _resumeContinueBtn.addEventListener('click', () => {
       closeResumeModal();
-      resumeBetaRun();  // Phase 7: restart paused timers
+      resumeBetaRun();
     });
   }
 
@@ -3171,11 +3467,10 @@
   if (_resumeNewBtn) {
     _resumeNewBtn.addEventListener('click', () => {
       closeResumeModal();
-      backToIntro();  // resets runState and shows the intro screen
+      backToIntro();
     });
   }
 
-  // Click outside the resume modal to close it (treat as "continue")
   const _resumeModal = document.getElementById('betaResumeModal');
   if (_resumeModal) {
     _resumeModal.addEventListener('click', (e) => {
