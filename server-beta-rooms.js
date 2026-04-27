@@ -33,7 +33,7 @@ const CHARACTERS = {
   trickster: { id: 'trickster', name: 'The Trickster', startingJoker: 'doubletalk' },
   hoarder:   { id: 'hoarder',   name: 'The Hoarder',   handSizeBonus: 1, startingJoker: 'slowHand' },
   banker:    { id: 'banker',    name: 'The Banker',    startingGold: 150, startingGildedA: true, startingJoker: 'surveyor' },
-  bait:      { id: 'bait',      name: 'The Bait',      startingJoker: 'spikedTrap' },
+  bait:      { id: 'bait',      name: 'The Bait',      startingJoker: 'spikedTrap', peekAtRoundStart: true },
   gambler:   { id: 'gambler',   name: 'The Gambler',   goldMultiplier: 1.5, startingJoker: 'blackHole', forcedCursedOnNewFloor: true },
 };
 
@@ -88,15 +88,15 @@ const SHOP_ITEMS = [
   { id: 'counterfeit',   name: 'Counterfeit',         price: 35,  desc: 'Change target rank now and lock through next LIAR (consumable).', enabled: true, type: 'consumable' },
   { id: 'jackBeNimble',  name: 'Jack-be-Nimble',      price: 90,  desc: 'Discard up to 2 Jacks from your hand (consumable).', enabled: true, type: 'consumable' },
   { id: 'glassShard',    name: 'Glass Shard',         price: 30,  desc: 'Apply Glass to a run-deck card.', enabled: true, type: 'service' },
-  { id: 'forger',        name: 'Forger',              price: 100, desc: 'Clone a run-deck card onto another (service — not yet wired in PvP).', enabled: false, type: 'service' },
+  { id: 'forger',        name: 'Forger',              price: 100, desc: 'Clone one run-deck card onto another (rank + affix). No Jacks.', enabled: true, type: 'service' },
   { id: 'spikedWire',    name: 'Spiked Wire',         price: 30,  desc: 'Apply Spiked to a run-deck card.', enabled: true, type: 'service' },
   { id: 'steelPlating',  name: 'Steel Plating',       price: 50,  desc: 'Apply Steel to a run-deck card.', enabled: true, type: 'service' },
   { id: 'mirageLens',    name: 'Mirage Lens',         price: 200, desc: 'Apply Mirage to a run-deck card.', enabled: true, type: 'service' },
   { id: 'stripper',      name: 'Stripper',            price: 60,  desc: 'Permanently remove a run-deck card (no Jacks).', enabled: true, type: 'service' },
   { id: 'engraver',      name: 'Engraver',            price: 80,  desc: 'Add a vanilla card to your run deck.', enabled: true, type: 'service' },
-  { id: 'tracer',        name: 'Tracer',              price: 40,  desc: 'See and rearrange top 3 of draw pile (service — not yet wired in PvP).', enabled: false, type: 'service' },
-  { id: 'devilsBargain', name: "Devil's Bargain",     price: 55,  desc: 'Drop a hand card; draw a Cursed card (service — not yet wired in PvP).', enabled: false, type: 'service' },
-  { id: 'magnet',        name: 'Magnet',              price: 75,  desc: 'Give a hand card to a random opponent (service — not yet wired in PvP).', enabled: false, type: 'service' },
+  { id: 'tracer',        name: 'Tracer',              price: 40,  desc: 'See top 3 of draw pile, rearrange them (consumable — use on your turn).', enabled: true, type: 'consumable' },
+  { id: 'devilsBargain', name: "Devil's Bargain",     price: 55,  desc: 'Drop a hand card to bottom of draw pile; draw the top with Cursed (consumable).', enabled: true, type: 'consumable' },
+  { id: 'magnet',        name: 'Magnet',              price: 75,  desc: 'Give one of your hand cards (not Steel) to a random opponent (consumable).', enabled: true, type: 'consumable' },
   { id: 'crackedCoin',   name: 'RELIC · Cracked Coin', price: 200, desc: '[Relic] Each round start: gain 5g × Hearts remaining.', enabled: true, type: 'relic' },
   { id: 'loadedDie',     name: 'RELIC · Loaded Die',   price: 200, desc: '[Relic] Once per floor, reroll the Target Rank.', enabled: true, type: 'relic' },
   { id: 'pocketWatch',   name: 'RELIC · Pocket Watch', price: 200, desc: '[Relic] +5 seconds challenge window (stacks).', enabled: true, type: 'relic' },
@@ -681,6 +681,16 @@ function startRound(room) {
     }
   }
 
+  // Bait character: round start peek at 1 random card from 1 random opponent
+  for (const p of room.players) {
+    if (!p.character || !p.character.peekAtRoundStart) continue;
+    const opps = room.players.filter(op => op !== p && !op.eliminated && op.hand && op.hand.length > 0);
+    if (opps.length === 0) continue;
+    const target = opps[Math.floor(Math.random() * opps.length)];
+    const c = target.hand[Math.floor(Math.random() * target.hand.length)];
+    addPendingPeek(p, 'bait', { player: target.name, rank: c.rank });
+  }
+
   // Hand Mirror relic: same as Cold Read (overlap acceptable)
   for (const p of room.players) {
     if (playerHasRelic(p, 'handMirror')) {
@@ -950,6 +960,9 @@ function handleLiar(room, playerId) {
 
   // Gilded trigger for whoever holds the new turn
   triggerGildedTurn(room, room.currentTurnIdx);
+
+  // After taking pile, run Jack-curse check (in case picker now hits the Jack limit)
+  checkJackCurse(room);
 
   // After taking pile, check round end
   if (activeCount(room) <= 1) {
@@ -1306,6 +1319,32 @@ function applyService(room, playerId, target) {
     return finalize(`engraved a new vanilla ${r} into their run deck (size ${p.runDeck.length}).`);
   }
 
+  if (itemId === 'forger') {
+    // Two-step: first call sends only sourceId; we stash it. Second call sends targetId; we clone.
+    if (target.sourceId && !target.targetId) {
+      const src = (p.runDeck || []).find(c => c.id === target.sourceId);
+      if (!src) return { error: 'Source not found in your run deck.' };
+      if (src.rank === 'J') return { error: 'Cannot use a Jack as the source.' };
+      ps.forgerSourceId = src.id;
+      // Don't finalize yet — wait for target
+      return { ok: true, awaitingTarget: true };
+    }
+    if (target.targetId) {
+      const sourceId = ps.forgerSourceId;
+      if (!sourceId) return { error: 'Pick a source first.' };
+      const src = (p.runDeck || []).find(c => c.id === sourceId);
+      const tgt = (p.runDeck || []).find(c => c.id === target.targetId);
+      if (!src) return { error: 'Source not found.' };
+      if (!tgt) return { error: 'Target not found.' };
+      if (tgt.id === src.id) return { error: 'Pick a different target.' };
+      if (tgt.rank === 'J') return { error: 'Cannot target a Jack.' };
+      tgt.rank = src.rank;
+      tgt.affix = src.affix;
+      return finalize(`forged ${tgt.id} into a ${src.rank}${src.affix ? ' [' + src.affix + ']' : ''}.`);
+    }
+    return { error: 'Pick a source first, then a target.' };
+  }
+
   return refund('Service not yet wired.');
 }
 
@@ -1409,6 +1448,41 @@ function removePlayer(room, playerId) {
   return true;
 }
 
+// Jack-curse elimination — too many Jacks in hand eliminates the player from
+// the round. Vengeful Spirit drags the next active player down too.
+function checkJackCurse(room) {
+  let any = false;
+  for (let i = 0; i < room.players.length; i++) {
+    const p = room.players[i];
+    if (p.eliminated || p.finishedThisRound) continue;
+    const jacks = (p.hand || []).filter(c => c.rank === 'J').length;
+    let limit = jackLimitFor(p);
+    if (room.currentFloorModifier === 'greedy') limit = 3;
+    if (jacks >= limit) {
+      p.eliminated = true;
+      any = true;
+      log(room, `${p.name} - Jack curse: ${jacks} Jacks (limit ${limit}). Eliminated from this round.`);
+      if (playerHasJoker(p, 'vengefulSpirit')) {
+        for (let n = 1; n < room.players.length; n++) {
+          const ni = (i + n) % room.players.length;
+          const np = room.players[ni];
+          if (!np || np.eliminated || np.finishedThisRound) continue;
+          np.eliminated = true;
+          log(room, `${np.name} - Vengeful Spirit pulls them down too.`);
+          break;
+        }
+      }
+    }
+  }
+  if (any) {
+    const cur = room.players[room.currentTurnIdx];
+    if (!cur || cur.eliminated || cur.finishedThisRound) {
+      room.currentTurnIdx = findNextActiveIdx(room, room.currentTurnIdx);
+    }
+  }
+  return any;
+}
+
 // ---------- Tattletale active ----------
 function useTattletale(room, playerId, targetIdx) {
   const p = findPlayerById(room, playerId);
@@ -1470,6 +1544,79 @@ function useConsumable(room, playerId, itemId, options) {
     const ids = new Set(jacks.map(c => c.id));
     p.hand = p.hand.filter(c => !ids.has(c.id));
     log(room, `${p.name} used Jack-be-Nimble (discarded ${jacks.length} Jack${jacks.length === 1 ? '' : 's'}).`);
+    return { ok: true };
+  }
+
+  if (itemId === 'tracer') {
+    if (idx !== room.currentTurnIdx) return { error: 'Use Tracer on your turn.' };
+    if (room.challengeOpen) return { error: 'Cannot use during a challenge.' };
+    const top = room.drawPile.length;
+    if (top === 0) return { error: 'Draw pile is empty.' };
+    const perm = options && Array.isArray(options.perm) ? options.perm : null;
+    if (!perm) {
+      // First call: send the top 3 to the player as a peek; client requests again with permutation
+      const topCount = Math.min(3, top);
+      const tops = [];
+      for (let i = 0; i < topCount; i++) {
+        const c = room.drawPile[top - 1 - i];
+        tops.push({ id: c.id, rank: c.rank, affix: c.affix || null });
+      }
+      addPendingPeek(p, 'tracerPeek', { topCards: tops });
+      return { ok: true };
+    }
+    // perm contains indices [0..topCount-1] in the new top-first order.
+    const topCount = Math.min(perm.length, top);
+    const newTopFirst = [];
+    for (let i = 0; i < topCount; i++) {
+      const idx2 = perm[i];
+      if (typeof idx2 !== 'number' || idx2 < 0 || idx2 >= topCount) return { error: 'Bad permutation.' };
+      const c = room.drawPile[top - 1 - idx2];
+      newTopFirst.push(c);
+    }
+    // Replace the top topCount cards in drawPile with newTopFirst (first one ends up at the top = last index)
+    for (let i = 0; i < topCount; i++) {
+      room.drawPile[top - 1 - i] = newTopFirst[i];
+    }
+    p.inventory[itemId]--;
+    log(room, `${p.name} used Tracer.`);
+    return { ok: true };
+  }
+
+  if (itemId === 'devilsBargain') {
+    if (idx !== room.currentTurnIdx) return { error: 'Use Devil\'s Bargain on your turn.' };
+    if (room.challengeOpen) return { error: 'Cannot use during a challenge.' };
+    const handCardId = options && options.handCardId;
+    const card = (p.hand || []).find(c => c.id === handCardId);
+    if (!card) return { error: 'Pick a hand card.' };
+    if (room.drawPile.length === 0) return { error: 'Draw pile empty.' };
+    p.inventory[itemId]--;
+    // Drop the chosen card to BOTTOM of draw pile
+    p.hand = p.hand.filter(c => c.id !== card.id);
+    room.drawPile.unshift(card);
+    // Draw the top card; apply Cursed
+    const drawn = room.drawPile.pop();
+    drawn.affix = 'cursed';
+    p.hand.push(drawn);
+    log(room, `${p.name} used Devil's Bargain — gained a Cursed ${drawn.rank}.`);
+    return { ok: true };
+  }
+
+  if (itemId === 'magnet') {
+    if (idx !== room.currentTurnIdx) return { error: 'Use Magnet on your turn.' };
+    if (room.challengeOpen) return { error: 'Cannot use during a challenge.' };
+    const handCardId = options && options.handCardId;
+    const card = (p.hand || []).find(c => c.id === handCardId);
+    if (!card) return { error: 'Pick a hand card.' };
+    if (card.affix === 'steel') return { error: 'Cannot give a Steel card.' };
+    const opps = room.players.filter(op => op !== p && !op.eliminated && !op.finishedThisRound);
+    if (opps.length === 0) return { error: 'No eligible opponent.' };
+    p.inventory[itemId]--;
+    p.hand = p.hand.filter(c => c.id !== card.id);
+    const target = opps[Math.floor(Math.random() * opps.length)];
+    target.hand.push(card);
+    log(room, `${p.name} used Magnet — sent a ${card.rank} to ${target.name}.`);
+    // Magnet can push receiver over Jack limit
+    checkJackCurse(room);
     return { ok: true };
   }
 

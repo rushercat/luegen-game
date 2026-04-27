@@ -264,7 +264,7 @@
       } else {
         for (const id of ids) {
           const btn = document.createElement('button');
-          const labels = { smokeBomb: '&#128168; Smoke Bomb', counterfeit: '&#128276; Counterfeit', jackBeNimble: '&#127183; Jack-be-Nimble' };
+          const labels = { smokeBomb: '&#128168; Smoke Bomb', counterfeit: '&#128276; Counterfeit', jackBeNimble: '&#127183; Jack-be-Nimble', tracer: '&#128270; Tracer', devilsBargain: "&#128520; Devil's Bargain", magnet: '&#129516; Magnet' };
           btn.className = 'bg-amber-700 hover:bg-amber-600 transition px-2 py-1 rounded text-xs font-bold';
           btn.innerHTML = (labels[id] || id) + ' (' + inv[id] + ')';
           btn.addEventListener('click', () => useConsumable(id));
@@ -283,20 +283,49 @@
           alert((peek.kind === 'coldRead' ? 'Cold Read' : 'Hand Mirror') + ':\n' + txt);
         } else if (peek.kind === 'eavesdropper') {
           alert('Eavesdropper - ' + peek.payload.source + ': ' + peek.payload.bucket + ' matches for the target rank.');
+        } else if (peek.kind === 'bait') {
+          alert('Bait - ' + peek.payload.player + ': ' + peek.payload.rank);
+        } else if (peek.kind === 'tracerPeek') {
+          // Show top-3 cards, prompt for new order
+          const tops = peek.payload.topCards || [];
+          const tag = (c, i) => i + ': ' + c.rank + (c.affix ? ' [' + c.affix + ']' : '');
+          const labels = tops.map((c, i) => tag(c, i)).join('\n');
+          const order = prompt('Tracer — top of draw pile (TOP first):\n' + labels + '\n\nEnter NEW order as comma-separated indices (top first), e.g. "0,1,2" to keep, "2,1,0" to flip:');
+          if (!order) return;
+          const perm = order.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !Number.isNaN(n));
+          if (perm.length === 0) return;
+          socket.emit('beta:useConsumable', { itemId: 'tracer', options: { perm } });
         }
       }
     }
   }
 
   function useConsumable(itemId) {
-    if (!socket) return;
+    if (!socket || !lastState) return;
     if (itemId === 'counterfeit') {
       const newRank = prompt('Counterfeit — change target to (A, K, Q, 10):');
       if (!newRank) return;
       socket.emit('beta:useConsumable', { itemId, options: { newRank: newRank.toUpperCase() } });
-    } else {
-      socket.emit('beta:useConsumable', { itemId });
+      return;
     }
+    if (itemId === 'tracer') {
+      // First call requests the peek; then we'll prompt for permutation
+      socket.emit('beta:useConsumable', { itemId });
+      return;
+    }
+    if (itemId === 'devilsBargain' || itemId === 'magnet') {
+      const hand = (lastState.mine && lastState.mine.hand) || [];
+      const eligible = itemId === 'magnet' ? hand.filter(c => c.affix !== 'steel') : hand.slice();
+      if (eligible.length === 0) { alert('No eligible cards in your hand.'); return; }
+      const labels = eligible.map((c, i) => i + ': ' + c.rank + (c.affix ? ' [' + c.affix + ']' : '')).join('\n');
+      const choice = prompt('Pick a hand card index:\n' + labels);
+      if (choice === null) return;
+      const idx = parseInt(choice, 10);
+      if (Number.isNaN(idx) || idx < 0 || idx >= eligible.length) return;
+      socket.emit('beta:useConsumable', { itemId, options: { handCardId: eligible[idx].id } });
+      return;
+    }
+    socket.emit('beta:useConsumable', { itemId });
   }
 
   function useTattletale() {
@@ -411,9 +440,25 @@
         wrap.className = 'flex flex-wrap gap-2 items-center';
         const myDeck = (s.mine && s.mine.runDeck) || [];
         const isStripper = pending.itemId === 'stripper';
-        const eligible = isStripper
-          ? myDeck.filter(c => c.rank !== 'J')
-          : myDeck.filter(c => !c.affix);
+        const isForger = pending.itemId === 'forger';
+        const forgerSourceId = window._forgerSourceId || null;
+        const phase = isForger ? (forgerSourceId ? 'target' : 'source') : 'apply';
+        let eligible = [];
+        if (isForger) {
+          eligible = phase === 'source'
+            ? myDeck.filter(c => c.rank !== 'J')
+            : myDeck.filter(c => c.rank !== 'J' && c.id !== forgerSourceId);
+          const phaseLabel = document.createElement('div');
+          phaseLabel.className = 'col-span-full w-full text-xs text-emerald-200 mb-1';
+          phaseLabel.textContent = phase === 'source'
+            ? 'Forger — pick the SOURCE card (its rank + affix will be cloned).'
+            : 'Forger — pick the TARGET card (becomes a copy of source).';
+          wrap.appendChild(phaseLabel);
+        } else if (isStripper) {
+          eligible = myDeck.filter(c => c.rank !== 'J');
+        } else {
+          eligible = myDeck.filter(c => !c.affix);
+        }
         if (eligible.length === 0) {
           wrap.innerHTML = '<span class="text-xs italic text-rose-300">No eligible cards in your run deck.</span>';
         } else {
@@ -425,7 +470,18 @@
             b.className = cls;
             b.textContent = c.rank;
             if (c.affix) b.title = 'Affix: ' + c.affix;
-            b.addEventListener('click', () => socket.emit('beta:applyService', { target: { cardId: c.id } }));
+            b.addEventListener('click', () => {
+              if (isForger && phase === 'source') {
+                window._forgerSourceId = c.id;
+                socket.emit('beta:applyService', { target: { sourceId: c.id } });
+                renderShopList();
+              } else if (isForger && phase === 'target') {
+                socket.emit('beta:applyService', { target: { targetId: c.id } });
+                window._forgerSourceId = null;
+              } else {
+                socket.emit('beta:applyService', { target: { cardId: c.id } });
+              }
+            });
             wrap.appendChild(b);
           }
         }
