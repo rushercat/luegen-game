@@ -375,6 +375,40 @@ async function grantAchievement(userId, achievementId) {
   return { owned: cur.owned, achievements: next };
 }
 
+// ---- Phase 7: beta run history ----
+
+const RUN_HISTORY_CAP = 20;
+
+async function getBetaRunHistory(userId) {
+  if (!enabled || !userId) return [];
+  const { data, error } = await supabase
+    .from('users')
+    .select('beta_run_history')
+    .eq('id', userId)
+    .maybeSingle();
+  if (error || !data) return [];
+  return Array.isArray(data.beta_run_history) ? data.beta_run_history : [];
+}
+
+async function recordBetaRun(userId, run) {
+  if (!enabled || !userId || !run || typeof run !== 'object') return null;
+  const cur = await getBetaRunHistory(userId);
+  // Sanitize: only allow expected fields, server-set timestamp
+  const sanitized = {
+    date: new Date().toISOString(),
+    characterId: typeof run.characterId === 'string' ? run.characterId.slice(0, 32) : null,
+    characterName: typeof run.characterName === 'string' ? run.characterName.slice(0, 32) : null,
+    result: run.result === 'won' ? 'won' : 'lost',
+    maxFloor: Math.max(1, Math.min(99, parseInt(run.maxFloor, 10) || 1)),
+    hearts: Math.max(0, Math.min(9, parseInt(run.hearts, 10) || 0)),
+    gold: Math.max(0, Math.min(99999, parseInt(run.gold, 10) || 0))
+  };
+  const next = [sanitized, ...cur].slice(0, RUN_HISTORY_CAP);
+  const { error } = await supabase.from('users').update({ beta_run_history: next }).eq('id', userId);
+  if (error) return cur;
+  return next;
+}
+
 module.exports = {
   enabled,
   oauthEnabled,
@@ -398,5 +432,7 @@ module.exports = {
   adminUnlockAllProgression,
   getCosmetics,
   grantCosmetic,
-  grantAchievement
+  grantAchievement,
+  getBetaRunHistory,
+  recordBetaRun
 };

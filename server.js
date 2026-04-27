@@ -118,6 +118,23 @@ app.get('/api/cosmetics/me', async (req, res) => {
   res.json({ cosmetics: c });
 });
 
+// ---- Phase 7: beta run history ----
+
+app.get('/api/beta/run-history', async (req, res) => {
+  const user = await auth.getUserByToken(bearerToken(req));
+  if (!user) return res.status(401).json({ error: 'Not signed in.' });
+  const history = await auth.getBetaRunHistory(user.id);
+  res.json({ history: history });
+});
+
+app.post('/api/beta/run-history', async (req, res) => {
+  const user = await auth.getUserByToken(bearerToken(req));
+  if (!user) return res.status(401).json({ error: 'Not signed in.' });
+  const next = await auth.recordBetaRun(user.id, req.body || {});
+  if (!next) return res.status(500).json({ error: 'Could not record run.' });
+  res.json({ history: next });
+});
+
 app.post('/api/oauth-link', async (req, res) => {
   try {
     const { supabase_token, username } = req.body || {};

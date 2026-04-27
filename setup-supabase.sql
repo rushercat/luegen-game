@@ -114,3 +114,10 @@ alter table users add column if not exists is_admin boolean not null default fal
 -- earns them through play.
 alter table users add column if not exists owned_cosmetics text[] not null default '{}';
 alter table users add column if not exists earned_achievements text[] not null default '{}';
+
+
+-- ===== Phase 7: beta run history =====
+-- jsonb array of past run summaries for the beta prototype. Capped to ~20
+-- most recent entries by the server. Used to render "recent runs" on the
+-- beta intro screen.
+alter table users add column if not exists beta_run_history jsonb not null default '[]'::jsonb;

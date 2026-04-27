@@ -179,6 +179,63 @@
     } catch (e) { return null; }
   }
 
+  // Phase 7: run history fetch + record
+  async function fetchRunHistory() {
+    const token = getAuthToken();
+    if (!token) return [];
+    try {
+      const r = await fetch('/api/beta/run-history', {
+        headers: { 'Authorization': 'Bearer ' + token }
+      });
+      if (!r.ok) return [];
+      const data = await r.json();
+      return Array.isArray(data && data.history) ? data.history : [];
+    } catch (e) { return []; }
+  }
+
+  function postRunHistory(run) {
+    const token = getAuthToken();
+    if (!token) return Promise.resolve(null);
+    return fetch('/api/beta/run-history', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + token
+      },
+      body: JSON.stringify(run)
+    }).then(r => r.ok ? r.json() : null).catch(() => null);
+  }
+
+  async function renderRunHistory() {
+    const list = document.getElementById('betaRunHistoryList');
+    if (!list) return;
+    const token = getAuthToken();
+    if (!token) {
+      list.innerHTML = '<p class="text-xs text-emerald-300 text-center">Sign in to track run history.</p>';
+      return;
+    }
+    list.innerHTML = '<p class="text-xs text-emerald-300 text-center">Loading...</p>';
+    const history = await fetchRunHistory();
+    if (!history.length) {
+      list.innerHTML = '<p class="text-xs text-white/50 text-center italic">No runs recorded yet. Your next run will show up here.</p>';
+      return;
+    }
+    list.innerHTML = '';
+    for (const h of history.slice(0, 5)) {
+      const row = document.createElement('div');
+      const won = h.result === 'won';
+      const tone = won ? 'text-emerald-300' : 'text-rose-300';
+      const dateLabel = h.date ? new Date(h.date).toLocaleDateString() : '';
+      row.className = 'flex items-center justify-between text-xs bg-black/30 px-3 py-1.5 rounded';
+      row.innerHTML =
+        '<span class="font-bold ' + tone + '">' + (won ? 'WON' : 'LOST') + '</span>' +
+        '<span class="text-white/80">' + escapeHtml(h.characterName || h.characterId || '?') + '</span>' +
+        '<span class="text-white/60">Floor ' + h.maxFloor + '</span>' +
+        '<span class="text-white/40">' + escapeHtml(dateLabel) + '</span>';
+      list.appendChild(row);
+    }
+  }
+
   // Public accessors used by the rest of the code
   function getMaxFloorReached() {
     if (_serverProgression) return _serverProgression.maxFloor || 1;
@@ -209,28 +266,35 @@
     return true;
   }
 
+  // Phase 7+: relics — permanent passive bonuses (one of each per run)
+  const RELIC_CATALOG = {
+    crackedCoin: { id: 'crackedCoin', name: 'Cracked Coin', price: 200, desc: 'Each round start: gain 5g × Hearts remaining.' },
+    loadedDie:   { id: 'loadedDie',   name: 'Loaded Die',   price: 200, desc: 'Once per floor, reroll the Target Rank for the current round.' },
+    pocketWatch: { id: 'pocketWatch', name: 'Pocket Watch', price: 200, desc: 'Your challenge window is +5 seconds (stacks).' },
+    handMirror:  { id: 'handMirror',  name: 'Hand Mirror',  price: 250, desc: 'At round start, see one random card from each opponent.' },
+    ironStomach: { id: 'ironStomach', name: 'Iron Stomach', price: 300, desc: 'Glass-burned run-deck cards return as Steel at end of round.' },
+    ledger:      { id: 'ledger',      name: 'The Ledger',   price: 300, desc: '+25% gold from all sources (stacks with Gambler).' },
+  };
+
+  const HEART_SHARDS_REQUIRED = 3;     // 3 shards = +1 Heart
+  const LEDGER_GOLD_MULT = 1.25;       // The Ledger relic multiplier
+
   // Phase 5: jokers — passive/triggered perks held in 2 slots
   const JOKER_CATALOG = {
-    surveyor: {
-      id: 'surveyor', name: 'The Surveyor', rarity: 'Common', price: 80,
-      desc: "See the top card of the draw pile at all times.",
-    },
-    slowHand: {
-      id: 'slowHand', name: 'Slow Hand', rarity: 'Common', price: 80,
-      desc: "Your challenge window is 10 seconds (default 5).",
-    },
-    spikedTrap: {
-      id: 'spikedTrap', name: 'Spiked Trap', rarity: 'Rare', price: 250,
-      desc: "If you tell the truth and are challenged, the challenger draws 3 extra cards.",
-    },
-    tattletale: {
-      id: 'tattletale', name: 'Tattletale', rarity: 'Rare', price: 250,
-      desc: "Once per floor, peek at a player's full hand for 4 seconds.",
-    },
-    blackHole: {
-      id: 'blackHole', name: 'Black Hole', rarity: 'Legendary', price: 400,
-      desc: "On a successful Jack bluff (no challenge), delete one non-Jack card from your hand.",
-    },
+    surveyor: { id: 'surveyor', name: 'The Surveyor', rarity: 'Common', price: 80, desc: "See the top card of the draw pile at all times." },
+    slowHand: { id: 'slowHand', name: 'Slow Hand', rarity: 'Common', price: 80, desc: "Your challenge window is 10 seconds (default 5)." },
+    taxman: { id: 'taxman', name: 'The Taxman', rarity: 'Common', price: 80, desc: "When an opponent picks up a pile of 5+ cards, you gain 10g." },
+    eavesdropper: { id: 'eavesdropper', name: 'Eavesdropper', rarity: 'Uncommon', price: 150, desc: "Every 2 rounds, when the player before you plays, see whether their hand has NONE / SOME (1-2) / MANY (3+) matches for the Target." },
+    scapegoat: { id: 'scapegoat', name: 'The Scapegoat', rarity: 'Uncommon', price: 150, desc: "If you are caught lying with a Jack, the Jack(s) go to the challenger's hand. The rest of the pile still goes to you." },
+    hotSeat: { id: 'hotSeat', name: 'Hot Seat', rarity: 'Uncommon', price: 150, desc: "Your right neighbor's challenge window is 3 seconds (default 5)." },
+    sleightOfHand: { id: 'sleightOfHand', name: 'Sleight of Hand', rarity: 'Uncommon', price: 150, desc: "Once per round, on your turn, draw 1 card from the top of the draw pile." },
+    spikedTrap: { id: 'spikedTrap', name: 'Spiked Trap', rarity: 'Rare', price: 250, desc: "If you tell the truth and are challenged, the challenger draws 3 extra cards." },
+    tattletale: { id: 'tattletale', name: 'Tattletale', rarity: 'Rare', price: 250, desc: "Once per floor, peek at a player's full hand for 4 seconds." },
+    safetyNet: { id: 'safetyNet', name: 'Safety Net', rarity: 'Rare', price: 250, desc: "Your Jack limit is increased by 1 (4 -> 5, stacks with Hoarder)." },
+    doubletalk: { id: 'doubletalk', name: 'Doubletalk', rarity: 'Rare', price: 250, desc: "Once per round, declare a double-turn: play 2-4 cards instead of 1-3." },
+    blackHole: { id: 'blackHole', name: 'Black Hole', rarity: 'Legendary', price: 400, desc: "On a successful Jack bluff (no challenge), delete one non-Jack card from your hand." },
+    coldRead: { id: 'coldRead', name: 'Cold Read', rarity: 'Legendary', price: 400, desc: "At the start of each round, see one random card from each opponent's hand." },
+    vengefulSpirit: { id: 'vengefulSpirit', name: 'Vengeful Spirit', rarity: 'Legendary', price: 400, desc: "If the Jack curse eliminates you, the next active player is also eliminated." },
   };
   const SLOW_HAND_WINDOW_MS = 10000;
   const SPIKED_TRAP_DRAWS = 3;
@@ -289,12 +353,30 @@
       enabled: true,
       type: 'service',
     },
+    { id: 'tracer',        name: 'Tracer',         price: 40,  desc: 'See the top 3 cards of the draw pile and rearrange them.', enabled: true, type: 'service' },
+    { id: 'devilsBargain', name: 'Devil\'s Bargain', price: 55, desc: 'Drop a hand card to the bottom of the draw pile; draw the top card with the Cursed affix.', enabled: true, type: 'service' },
+    { id: 'magnet',        name: 'Magnet',         price: 75,  desc: 'Give one hand card (your choice, not Steel) to a random opponent.', enabled: true, type: 'service' },
+    { id: 'crackedCoin',   name: 'RELIC · Cracked Coin', price: 200, desc: '[Relic] Each round start: gain 5g × Hearts remaining.', enabled: true, type: 'relic' },
+    { id: 'loadedDie',     name: 'RELIC · Loaded Die',   price: 200, desc: '[Relic] Once per floor, reroll the Target Rank.',     enabled: true, type: 'relic' },
+    { id: 'pocketWatch',   name: 'RELIC · Pocket Watch', price: 200, desc: '[Relic] +5 seconds challenge window (stacks).',       enabled: true, type: 'relic' },
+    { id: 'handMirror',    name: 'RELIC · Hand Mirror',  price: 250, desc: '[Relic] Round start: see 1 random card from each opponent.', enabled: true, type: 'relic' },
+    { id: 'ironStomach',   name: 'RELIC · Iron Stomach', price: 300, desc: '[Relic] Glass-burned run-deck cards return as Steel at end of round.', enabled: true, type: 'relic' },
+    { id: 'ledger',        name: 'RELIC · The Ledger',   price: 300, desc: '[Relic] +25% gold from all sources (stacks).',         enabled: true, type: 'relic' },
     // Phase 5: jokers in the shop. Each joker has a unique id matching JOKER_CATALOG.
-    { id: 'surveyor',   name: 'JOKER · The Surveyor',  price: 80,  desc: '[Common] See the top card of the draw pile at all times.', enabled: true, type: 'joker' },
-    { id: 'slowHand',   name: 'JOKER · Slow Hand',     price: 80,  desc: '[Common] Your challenge window is 10s (default 5).',      enabled: true, type: 'joker' },
-    { id: 'spikedTrap', name: 'JOKER · Spiked Trap',   price: 250, desc: '[Rare] Truthful + challenged → challenger draws +3.',     enabled: true, type: 'joker' },
-    { id: 'tattletale', name: 'JOKER · Tattletale',    price: 250, desc: '[Rare] Once per floor, peek at a hand for 4s.',           enabled: true, type: 'joker' },
-    { id: 'blackHole',  name: 'JOKER · Black Hole',    price: 400, desc: '[Legendary] Successful Jack bluff: delete a non-Jack.',   enabled: true, type: 'joker' },
+    { id: 'surveyor',     name: 'JOKER · Surveyor',        price: 80,  desc: '[Common] See top of draw pile.',                              enabled: true, type: 'joker' },
+    { id: 'slowHand',     name: 'JOKER · Slow Hand',       price: 80,  desc: '[Common] Challenge window 10s.',                              enabled: true, type: 'joker' },
+    { id: 'taxman',       name: 'JOKER · The Taxman',      price: 80,  desc: '[Common] Opponent takes 5+ pile = +10g.',                     enabled: true, type: 'joker' },
+    { id: 'eavesdropper', name: 'JOKER · Eavesdropper',    price: 150, desc: '[Uncommon] Every 2 rounds: fuzzy match count from prev player.',enabled: true, type: 'joker' },
+    { id: 'scapegoat',    name: 'JOKER · The Scapegoat',   price: 150, desc: '[Uncommon] Caught lying with Jack? Jack goes to challenger.', enabled: true, type: 'joker' },
+    { id: 'hotSeat',      name: 'JOKER · Hot Seat',        price: 150, desc: '[Uncommon] Right neighbor has 3s window.',                    enabled: true, type: 'joker' },
+    { id: 'sleightOfHand',name: 'JOKER · Sleight of Hand', price: 150, desc: '[Uncommon] Once per round: draw 1 card.',                      enabled: true, type: 'joker' },
+    { id: 'spikedTrap',   name: 'JOKER · Spiked Trap',     price: 250, desc: '[Rare] Truth + challenged = challenger draws +3.',            enabled: true, type: 'joker' },
+    { id: 'tattletale',   name: 'JOKER · Tattletale',      price: 250, desc: '[Rare] Once per floor: peek at a hand for 4s.',               enabled: true, type: 'joker' },
+    { id: 'safetyNet',    name: 'JOKER · Safety Net',      price: 250, desc: '[Rare] Jack limit +1 (stacks with Hoarder).',                  enabled: true, type: 'joker' },
+    { id: 'doubletalk',   name: 'JOKER · Doubletalk',      price: 250, desc: '[Rare] Once per round: play 2-4 cards.',                      enabled: true, type: 'joker' },
+    { id: 'blackHole',    name: 'JOKER · Black Hole',      price: 400, desc: '[Legendary] Successful Jack bluff: delete a non-Jack.',       enabled: true, type: 'joker' },
+    { id: 'coldRead',     name: 'JOKER · Cold Read',       price: 400, desc: '[Legendary] Round start: see 1 card from each opponent.',      enabled: true, type: 'joker' },
+    { id: 'vengefulSpirit',name:'JOKER · Vengeful Spirit', price: 400, desc: '[Legendary] Jack-cursed = drag next active player down.',      enabled: true, type: 'joker' },
   ];
 
   // Phase 3: random events at the Event fork node.
@@ -358,6 +440,10 @@
       jokers: [null, null],
       tattletaleChargesThisFloor: 0,
       character: character,
+      eavesdropperLastFiredRound: -99,
+      relics: [],
+      heartShards: 0,
+      loadedDieUsedThisFloor: false,
     };
 
     if (character) {
@@ -385,6 +471,17 @@
   function endRun(victory) {
     const won = victory === true;
     if (won) setRunWon();  // Phase 5+: unlock Gambler on first run win
+    // Phase 7: record run history (server-side, fire-and-forget)
+    if (runState) {
+      postRunHistory({
+        characterId: runState.character ? runState.character.id : null,
+        characterName: runState.character ? runState.character.name : null,
+        result: won ? 'won' : 'lost',
+        maxFloor: runState.currentFloor || 1,
+        hearts: runState.hearts,
+        gold: runState.gold
+      });
+    }
     showResultModal({
       tone: won ? 'win' : 'lose',
       title: won ? 'Run complete!' : 'Run over',
@@ -454,6 +551,11 @@
       placements: [],          // ordered list of player indices who emptied their hand
       counterfeitUsed: false,  // Phase 4: Counterfeit is once per round
       counterfeitLock: false,  // Phase 4: when true, next rotateTargetRank() is suppressed
+      echoArmedFor: -1,        // Phase 7+: player armed by Echo
+      doubletalkArmed: false,  // Phase 7+: 2-4 cards this turn
+      doubletalkUsedThisRound: false,
+      sleightUsedThisRound: false,
+      ironStomachBurned: [],   // Phase 7+: human's run-deck card IDs burned by Glass this round
       gameOver: false,
       challengeOpen: false,
       challengerIdx: -1,
@@ -463,6 +565,33 @@
     log('— Floor ' + runState.currentFloor + ', Round ' +
         (totalRoundsPlayed() + 1) +
         ' —  Target: ' + targetRank);
+
+    if (hasJoker('coldRead')) {
+      const peeks = [];
+      for (let i = 1; i < NUM_PLAYERS; i++) {
+        if (state.hands[i].length > 0) {
+          const c = state.hands[i][Math.floor(Math.random() * state.hands[i].length)];
+          peeks.push(playerLabel(i) + ': ' + c.rank);
+        }
+      }
+      if (peeks.length > 0) log('Cold Read — ' + peeks.join(', ') + '.');
+    }
+    // Phase 7+: Cracked Coin relic
+    if (hasRelic('crackedCoin')) {
+      const got = addGold(5 * runState.hearts);
+      if (got > 0) log('Cracked Coin: +' + got + 'g (' + runState.hearts + ' hearts).');
+    }
+    // Phase 7+: Hand Mirror relic — like Cold Read but a separate effect
+    if (hasRelic('handMirror')) {
+      const peeks = [];
+      for (let i = 1; i < NUM_PLAYERS; i++) {
+        if (state.hands[i].length > 0) {
+          const c = state.hands[i][Math.floor(Math.random() * state.hands[i].length)];
+          peeks.push(playerLabel(i) + ': ' + c.rank);
+        }
+      }
+      if (peeks.length > 0) log('Hand Mirror — ' + peeks.join(', ') + '.');
+    }
 
     // Phase 5: Bait peek — see one random card from a random opponent
     if (runState && runState.character && runState.character.peekAtRoundStart) {
@@ -496,6 +625,24 @@
     state.gameOver = true;
     state.challengeOpen = false;
     clearAllTimers();
+
+    // Phase 7+: Iron Stomach — restore Glass-burned run-deck cards as Steel
+    if (hasRelic('ironStomach') && state.ironStomachBurned && state.ironStomachBurned.length > 0) {
+      let restored = 0;
+      const seen = new Set();
+      for (const id of state.ironStomachBurned) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const card = runState.runDeck.find(c => c.id === id);
+        if (card) {
+          card.affix = 'steel';
+          restored++;
+        }
+      }
+      if (restored > 0) {
+        log('Iron Stomach: ' + restored + ' burned card(s) restored as Steel for next round.');
+      }
+    }
 
     const humanWonRound = winnerIdx === 0;
     const humanPlace = state.placements.indexOf(0);
@@ -584,13 +731,24 @@
       return;
     }
 
+    // Phase 7+: Heart shard — winning a floor while at 1 Heart awards a shard.
+    // 3 shards = +1 Heart restored.
+    if (humanWonFloor && runState.hearts === 1) {
+      runState.heartShards = (runState.heartShards || 0) + 1;
+      log('Heart shard earned! (' + runState.heartShards + '/' + HEART_SHARDS_REQUIRED + ')');
+      if (runState.heartShards >= HEART_SHARDS_REQUIRED) {
+        runState.hearts++;
+        runState.heartShards = 0;
+        log('Heart restored from shards!');
+      }
+    }
+
     const floorJustFinished = runState.currentFloor;
     runState.currentFloor++;
     runState.roundsWon = new Array(NUM_PLAYERS).fill(0);
-    // Phase 5: Tattletale refreshes once per floor
+    runState.loadedDieUsedThisFloor = false;  // Phase 7+: reset Loaded Die per floor
     runState.tattletaleChargesThisFloor =
       hasJoker('tattletale') ? TATTLETALE_CHARGES_PER_FLOOR : 0;
-    // Phase 5+: persist progression for character unlocks
     setMaxFloorReached(runState.currentFloor);
 
     if (floorJustFinished >= TOTAL_FLOORS && humanWonFloor) {
@@ -716,9 +874,10 @@
 
   function applyJackFairness(hands, drawPile) {
     const playerLimitBonus = (runState && runState.character && runState.character.jackLimitBonus) || 0;
+    const playerJokerBonus = hasJoker('safetyNet') ? 1 : 0;
     for (let p = 0; p < hands.length; p++) {
       const hand = hands[p];
-      const limit = JACK_LIMIT + (p === 0 ? playerLimitBonus : 0);
+      const limit = JACK_LIMIT + (p === 0 ? (playerLimitBonus + playerJokerBonus) : 0);
       while (countJacks(hand) >= limit) {
         const jackIdx = hand.findIndex(c => c.rank === 'J');
         const replIdx = drawPile.findIndex(c => c.rank !== 'J');
@@ -784,7 +943,10 @@
 
   function playCards(playerIdx, cardIds) {
     if (state.gameOver || state.challengeOpen) return;
-    if (cardIds.length < 1 || cardIds.length > 3) return;
+    const dtArmed = playerIdx === 0 && state.doubletalkArmed;
+    const minCards = dtArmed ? 2 : 1;
+    const maxCards = dtArmed ? 4 : 3;
+    if (cardIds.length < minCards || cardIds.length > maxCards) return;
 
     const hand = state.hands[playerIdx];
     const cards = cardIds
@@ -800,6 +962,17 @@
         owner: playerIdx,
         id: c.id,
       });
+    }
+
+    // Phase 7+: Echo trigger — peek for armed player before pile push
+    if (state.echoArmedFor >= 0 && state.echoArmedFor !== playerIdx && cards.length > 0) {
+      const peeker = state.echoArmedFor;
+      const peeked = cards[0];
+      state.echoArmedFor = -1;
+      if (peeker === 0) {
+        log("Echo's eye: " + playerLabel(playerIdx) + "'s first card is a " +
+            peeked.rank + (peeked.affix ? ' (' + peeked.affix + ')' : '') + '.');
+      }
     }
 
     state.lastPlay = {
@@ -819,6 +992,36 @@
         runState.runDeck = runState.runDeck.filter(c => c.id !== card.id);
         log('Your Mirage is consumed (one-time wildcard).');
       }
+    }
+
+    // Phase 7+: Hollow draws replacement
+    const hollowCount = cards.filter(c => c.affix === 'hollow').length;
+    if (hollowCount > 0) {
+      let drew = 0;
+      for (let i = 0; i < hollowCount; i++) {
+        if (state.drawPile.length > 0) {
+          state.hands[playerIdx].push(state.drawPile.pop());
+          drew++;
+        }
+      }
+      if (drew > 0) log(playerLabel(playerIdx) + ' draws ' + drew + ' from draw pile (Hollow).');
+    }
+    if (cards.some(c => c.affix === 'echo')) {
+      state.echoArmedFor = playerIdx;
+    }
+    // Phase 7+: Eavesdropper — fires when previous player (NUM_PLAYERS-1) plays
+    if (playerIdx === ((NUM_PLAYERS - 1) % NUM_PLAYERS) && hasJoker('eavesdropper') &&
+        runState && (totalRoundsPlayed() - (runState.eavesdropperLastFiredRound !== undefined
+          ? runState.eavesdropperLastFiredRound : -99)) >= 2) {
+      const matches = state.hands[playerIdx].filter(c => c.rank === state.targetRank).length;
+      const bucket = matches === 0 ? 'NONE' : (matches <= 2 ? 'SOME (1-2)' : 'MANY (3+)');
+      log('Eavesdropper: ' + playerLabel(playerIdx) + ' has ' + bucket + ' matches for ' + state.targetRank + '.');
+      runState.eavesdropperLastFiredRound = totalRoundsPlayed();
+    }
+
+    if (playerIdx === 0 && state.doubletalkArmed) {
+      state.doubletalkArmed = false;
+      state.doubletalkUsedThisRound = true;
     }
 
     selected.clear();
@@ -842,6 +1045,13 @@
       ? SLOW_HAND_WINDOW_MS : CHALLENGE_MS;
     if (challenger === 0 && runState && runState.character && runState.character.challengeBonusMs) {
       windowMs += runState.character.challengeBonusMs;
+    }
+    if (challenger === (NUM_PLAYERS - 1) && hasJoker('hotSeat')) {
+      windowMs = 3000;
+    }
+    // Phase 7+: Pocket Watch relic — +5s for the human's window
+    if (challenger === 0 && hasRelic('pocketWatch')) {
+      windowMs += 5000;
     }
 
     document.getElementById('betaChallengeBar').classList.remove('hidden');
@@ -921,12 +1131,19 @@
     setTimeout(() => {
       // Phase 5: Glass on-reveal — each Glass card in the played stack burns
       // itself + 2 random non-Steel pile cards.
+      // Phase 7+: Iron Stomach tracks human's run-deck cards as they burn.
       const glassPlayed = playedCards.filter(c => c.affix === 'glass').length;
       if (glassPlayed > 0) {
         let burned = 0;
+        const ironOn = hasRelic('ironStomach');
         for (let g = 0; g < glassPlayed; g++) {
           const glassIdx = state.pile.findIndex(c => c.affix === 'glass');
-          if (glassIdx >= 0) { state.pile.splice(glassIdx, 1); burned++; }
+          if (glassIdx >= 0) {
+            const bc = state.pile[glassIdx];
+            if (ironOn && bc.owner === 0) state.ironStomachBurned.push(bc.id);
+            state.pile.splice(glassIdx, 1);
+            burned++;
+          }
           for (let i = 0; i < GLASS_BURN_RANDOM; i++) {
             const burnable = [];
             for (let j = 0; j < state.pile.length; j++) {
@@ -934,6 +1151,8 @@
             }
             if (burnable.length === 0) break;
             const pick = burnable[Math.floor(Math.random() * burnable.length)];
+            const bc2 = state.pile[pick];
+            if (ironOn && bc2.owner === 0) state.ironStomachBurned.push(bc2.id);
             state.pile.splice(pick, 1);
             burned++;
           }
@@ -960,9 +1179,13 @@
       };
 
       if (allMatch) {
-        // Truth told — challenger picks up, is skipped.
+        const _truthPileSize = state.pile.length;
         log('Truth told. ' + playerLabel(challengerIdx) +
-            ' takes the pile (' + state.pile.length + ' cards) and is skipped.');
+            ' takes the pile (' + _truthPileSize + ' cards) and is skipped.');
+        if (challengerIdx !== 0 && _truthPileSize >= 5 && hasJoker('taxman')) {
+          const got = addGold(10);
+          log('Taxman: ' + playerLabel(challengerIdx) + ' took ' + _truthPileSize + ' cards. +' + got + 'g.');
+        }
 
         // Phase 5: Spiked Trap fires when the human's truthful play is
         // wrongly challenged — challenger draws 3 extra cards.
@@ -996,10 +1219,26 @@
           setTimeout(botTurn, BOT_TURN_DELAY_MS);
         }
       } else {
-        // Lie caught — liar takes pile, challenger leads.
+        // Phase 7+: Scapegoat — Jacks routed to challenger
+        if (lp.playerIdx === 0 && hasJoker('scapegoat')) {
+          const playedJackIds = playedCards.filter(c => c.rank === 'J').map(c => c.id);
+          if (playedJackIds.length > 0) {
+            const jacksInPile = state.pile.filter(c => playedJackIds.includes(c.id));
+            state.pile = state.pile.filter(c => !playedJackIds.includes(c.id));
+            for (const c of jacksInPile) {
+              state.hands[challengerIdx].push({ rank: c.rank, id: c.id, owner: c.owner, affix: c.affix });
+            }
+            log('Scapegoat: ' + jacksInPile.length + ' Jack(s) routed to ' + playerLabel(challengerIdx) + '.');
+          }
+        }
+        const _liePileSize = state.pile.length;
         log('Lie caught! ' + playerLabel(lp.playerIdx) +
-            ' takes the pile (' + state.pile.length + ' cards). ' +
+            ' takes the pile (' + _liePileSize + ' cards). ' +
             playerLabel(challengerIdx) + ' leads next.');
+        if (lp.playerIdx !== 0 && _liePileSize >= 5 && hasJoker('taxman')) {
+          const got = addGold(10);
+          log('Taxman: ' + playerLabel(lp.playerIdx) + ' took ' + _liePileSize + ' cards. +' + got + 'g.');
+        }
         doSpikedDraws(lp.playerIdx);
         if (checkJackCurse(lp.playerIdx)) return;
 
@@ -1015,14 +1254,25 @@
   }
 
   function checkJackCurse(playerIdx) {
-    const playerLimitBonus = (playerIdx === 0 && runState && runState.character)
-                              ? (runState.character.jackLimitBonus || 0) : 0;
-    const limit = JACK_LIMIT + playerLimitBonus;
+    let bonus = (playerIdx === 0 && runState && runState.character)
+                 ? (runState.character.jackLimitBonus || 0) : 0;
+    if (playerIdx === 0 && hasJoker('safetyNet')) bonus += 1;
+    const limit = JACK_LIMIT + bonus;
     const jacks = countJacks(state.hands[playerIdx]);
     if (jacks >= limit) {
       log(playerLabel(playerIdx) + ' has ' + jacks +
           ' Jacks — eliminated by the Jack curse!');
       state.eliminated[playerIdx] = true;
+      if (playerIdx === 0 && hasJoker('vengefulSpirit')) {
+        for (let i = 1; i < NUM_PLAYERS; i++) {
+          const target = (playerIdx + i) % NUM_PLAYERS;
+          if (!state.eliminated[target] && !state.finished[target]) {
+            state.eliminated[target] = true;
+            log('Vengeful Spirit: ' + playerLabel(target) + ' is dragged down with you!');
+            break;
+          }
+        }
+      }
       if (endRoundIfDone()) return true;
     }
     return false;
@@ -1321,7 +1571,8 @@
   function renderStatusBar() {
     if (!runState) return;
     document.getElementById('betaFloor').textContent = runState.currentFloor;
-    document.getElementById('betaHearts').textContent = heartsString(runState.hearts);
+    document.getElementById('betaHearts').textContent = heartsString(runState.hearts) +
+      (runState.heartShards > 0 ? ' (' + runState.heartShards + '/' + HEART_SHARDS_REQUIRED + ' shards)' : '');
     document.getElementById('betaGold').textContent = runState.gold;
     document.getElementById('betaInventoryCount').textContent = totalInventory();
 
@@ -1350,6 +1601,8 @@
       case 'cursed': return 'ring-2 ring-purple-500';
       case 'steel':  return 'ring-2 ring-gray-300';
       case 'mirage': return 'ring-2 ring-pink-400';
+      case 'hollow': return 'ring-2 ring-indigo-400';
+      case 'echo':   return 'ring-2 ring-fuchsia-400';
       default: return null;
     }
   }
@@ -1374,10 +1627,16 @@
     return false;
   }
 
+  // Phase 7+: relic accessors
+  function hasRelic(relicId) {
+    return runState && Array.isArray(runState.relics) && runState.relics.includes(relicId);
+  }
+
   // Phase 5: gold gains respect character multiplier (Gambler +50%)
   function addGold(amount) {
     if (!runState) return amount;
-    const mult = (runState.character && runState.character.goldMultiplier) || 1;
+    let mult = (runState.character && runState.character.goldMultiplier) || 1;
+    if (hasRelic('ledger')) mult *= LEDGER_GOLD_MULT;
     const final = Math.floor(amount * mult);
     runState.gold += final;
     return final;
@@ -1545,6 +1804,31 @@
       if (jacksInHand > 0) {
         jbnBtn.classList.remove('hidden');
         document.getElementById('betaJackBtnCount').textContent = runState.inventory.jackBeNimble;
+      }
+    }
+
+    const dtBtn = document.getElementById('betaDoubletalkBtn');
+    if (dtBtn) {
+      dtBtn.classList.add('hidden');
+      if (myTurn && hasJoker('doubletalk') && !state.doubletalkUsedThisRound) {
+        dtBtn.classList.remove('hidden');
+        dtBtn.textContent = state.doubletalkArmed ? 'Doubletalk ON (cancel)' : 'Doubletalk';
+      }
+    }
+    const sohBtn = document.getElementById('betaSleightBtn');
+    if (sohBtn) {
+      sohBtn.classList.add('hidden');
+      if (myTurn && hasJoker('sleightOfHand') && !state.sleightUsedThisRound &&
+          state.drawPile.length > 0) {
+        sohBtn.classList.remove('hidden');
+      }
+    }
+    // Phase 7+: Loaded Die relic button
+    const ldBtn = document.getElementById('betaLoadedDieBtn');
+    if (ldBtn) {
+      ldBtn.classList.add('hidden');
+      if (myTurn && hasRelic('loadedDie') && !runState.loadedDieUsedThisFloor) {
+        ldBtn.classList.remove('hidden');
       }
     }
   }
@@ -1856,12 +2140,17 @@
     list.innerHTML = '';
     for (const item of SHOP_ITEMS) {
       const isJoker = item.type === 'joker';
+      const isRelic = item.type === 'relic';
       const equipped = isJoker && hasJoker(item.id);
+      const ownedRelic = isRelic && hasRelic(item.id);
       const slotsFull = isJoker && runState.jokers.every(j => j !== null);
-      const owned = isJoker ? (equipped ? 1 : 0) : (runState.inventory[item.id] || 0);
+      const owned = isJoker ? (equipped ? 1 : 0) :
+                    isRelic ? (ownedRelic ? 1 : 0) :
+                    (runState.inventory[item.id] || 0);
       const canAfford = runState.gold >= item.price;
       const disabled = !item.enabled || !canAfford ||
-                       (isJoker && (equipped || slotsFull));
+                       (isJoker && (equipped || slotsFull)) ||
+                       (isRelic && ownedRelic);
 
       const row = document.createElement('div');
       row.className = 'bg-black/40 p-4 rounded-xl flex items-center gap-4' +
@@ -1869,6 +2158,7 @@
       let btnLabel = item.enabled ? 'Buy' : 'Soon';
       if (isJoker && equipped) btnLabel = 'Equipped';
       else if (isJoker && slotsFull && !equipped) btnLabel = 'Slots full';
+      else if (isRelic && ownedRelic) btnLabel = 'Owned';
       const priceTag = '<span class="text-yellow-300 font-bold">' + item.price + 'g</span>';
       row.innerHTML =
         '<div class="flex-1">' +
@@ -1885,6 +2175,16 @@
           if (item.type === 'service') {
             if (item.id === 'glassShard') startGlassShardApply(item);
             else if (item.id === 'forger') startForgerApply(item);
+            else if (item.id === 'tracer') startTracerApply(item);
+            else if (item.id === 'devilsBargain') startDevilsBargainApply(item);
+            else if (item.id === 'magnet') startMagnetApply(item);
+          } else if (item.type === 'relic') {
+            if (hasRelic(item.id)) return;
+            runState.gold -= item.price;
+            runState.relics = runState.relics || [];
+            runState.relics.push(item.id);
+            log('Acquired relic: ' + item.name + '. (-' + item.price + 'g)');
+            renderShop();
           } else if (item.type === 'joker') {
             // Phase 5: equip joker into first empty slot
             if (hasJoker(item.id)) return;
@@ -2031,6 +2331,161 @@
   // Phase 3: Smoke Bomb consumable
   // ============================================================
 
+  // Phase 7+: Tracer — see top 3 of draw pile and rearrange
+  function startTracerApply(item) {
+    if (state.drawPile.length < 1) {
+      log('Tracer: draw pile is empty.');
+      return;
+    }
+    const topCount = Math.min(3, state.drawPile.length);
+    const topIndices = [];
+    for (let i = 0; i < topCount; i++) {
+      topIndices.push(state.drawPile.length - 1 - i);
+    }
+    // top is the LAST element of the array (popped first)
+    const topCards = topIndices.map(idx => state.drawPile[idx]);
+
+    // Build picker: show 6 permutations and let user pick
+    const itemsDiv = document.getElementById('betaShopItems');
+    const continueBtn = document.getElementById('betaShopContinueBtn');
+    itemsDiv.classList.add('hidden');
+    continueBtn.classList.add('hidden');
+    let picker = document.getElementById('betaShopServicePicker');
+    if (!picker) {
+      picker = document.createElement('div');
+      picker.id = 'betaShopServicePicker';
+      picker.className = 'mb-6';
+      itemsDiv.parentNode.insertBefore(picker, itemsDiv);
+    }
+    picker.innerHTML = '';
+    const title = document.createElement('p');
+    title.className = 'text-emerald-200 mb-3 text-center font-bold';
+    title.textContent = 'Tracer — top of draw pile (pick new order, top first)';
+    picker.appendChild(title);
+    const cardsRow = document.createElement('div');
+    cardsRow.className = 'flex flex-wrap gap-2 justify-center mb-3';
+    for (const c of topCards) {
+      const div = document.createElement('div');
+      let cls = 'card card-face flex items-center justify-center text-2xl font-bold text-black rounded';
+      const ring = affixRingClass(c.affix);
+      if (ring) cls += ' ' + ring;
+      div.className = cls;
+      div.textContent = c.rank;
+      cardsRow.appendChild(div);
+    }
+    picker.appendChild(cardsRow);
+    const labels = topCards.map(c => c.rank + (c.affix ? '*' : ''));
+    const perms = topCount === 1 ? [[0]] :
+                  topCount === 2 ? [[0,1],[1,0]] :
+                                   [[0,1,2],[0,2,1],[1,0,2],[1,2,0],[2,0,1],[2,1,0]];
+    const buttonsDiv = document.createElement('div');
+    buttonsDiv.className = 'flex flex-wrap gap-2 justify-center mb-3';
+    for (const perm of perms) {
+      const btn = document.createElement('button');
+      btn.className = 'bg-blue-600 hover:bg-blue-700 transition px-3 py-1 rounded font-bold text-sm';
+      btn.textContent = perm.map(i => labels[i]).join(' → ');
+      btn.addEventListener('click', () => {
+        // Apply this permutation to the top of draw pile
+        const newTop = perm.map(i => topCards[i]);
+        // Remove the original top cards (last topCount elements)
+        for (let i = 0; i < topCount; i++) state.drawPile.pop();
+        // Push back in reverse so newTop[0] is on top (last element)
+        for (let i = newTop.length - 1; i >= 0; i--) {
+          state.drawPile.push(newTop[i]);
+        }
+        runState.gold -= item.price;
+        log('Tracer: rearranged top of draw pile. (-' + item.price + 'g)');
+        closeServicePicker();
+        renderShop();
+      });
+      buttonsDiv.appendChild(btn);
+    }
+    picker.appendChild(buttonsDiv);
+    const cancel = document.createElement('button');
+    cancel.className = 'bg-white/10 hover:bg-white/20 transition px-4 py-1 rounded text-sm';
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', closeServicePicker);
+    picker.appendChild(cancel);
+    picker.classList.remove('hidden');
+  }
+
+  // Phase 7+: Devil's Bargain — drop a hand card, draw a Cursed card
+  function startDevilsBargainApply(item) {
+    if (state.hands[0].length === 0) {
+      log("Devil's Bargain: your hand is empty.");
+      return;
+    }
+    if (state.drawPile.length === 0) {
+      log("Devil's Bargain: draw pile is empty.");
+      return;
+    }
+    showServicePicker({
+      title: "Devil's Bargain — pick a hand card to drop to the draw pile bottom",
+      cards: state.hands[0],
+      onPick: (cardId) => {
+        const idx = state.hands[0].findIndex(c => c.id === cardId);
+        if (idx < 0) return;
+        const dropped = state.hands[0].splice(idx, 1)[0];
+        state.drawPile.unshift(dropped);
+        const drawn = state.drawPile.pop();
+        if (drawn.affix !== 'steel') drawn.affix = 'cursed';
+        state.hands[0].push(drawn);
+        runState.gold -= item.price;
+        log("Devil's Bargain: dropped " + dropped.rank + ', drew ' + drawn.rank +
+            (drawn.affix === 'cursed' ? ' (now Cursed)' : ' (Steel — unaffected)') +
+            '. (-' + item.price + 'g)');
+        closeServicePicker();
+        renderShop();
+      },
+    });
+  }
+
+  // Phase 7+: Magnet — give a hand card (no Steel) to a random opponent
+  function startMagnetApply(item) {
+    const eligible = state.hands[0].filter(c => c.affix !== 'steel');
+    if (eligible.length === 0) {
+      log('Magnet: no eligible cards.');
+      return;
+    }
+    showServicePicker({
+      title: 'Magnet — pick a hand card to send to a random opponent',
+      cards: eligible,
+      onPick: (cardId) => {
+        const idx = state.hands[0].findIndex(c => c.id === cardId);
+        if (idx < 0) return;
+        const card = state.hands[0].splice(idx, 1)[0];
+        const targets = [];
+        for (let i = 1; i < NUM_PLAYERS; i++) {
+          if (!state.eliminated[i] && !state.finished[i]) targets.push(i);
+        }
+        if (targets.length === 0) {
+          state.hands[0].push(card);
+          log('Magnet: no eligible opponents. Card returned.');
+          closeServicePicker();
+          return;
+        }
+        const target = targets[Math.floor(Math.random() * targets.length)];
+        state.hands[target].push(card);
+        runState.gold -= item.price;
+        log('Magnet: sent ' + card.rank + ' to ' + playerLabel(target) + '. (-' + item.price + 'g)');
+        closeServicePicker();
+        renderShop();
+      },
+    });
+  }
+
+  // Phase 7+: Loaded Die relic — reroll target rank, once per floor
+  function useLoadedDie() {
+    if (!hasRelic('loadedDie')) return;
+    if (runState.loadedDieUsedThisFloor) return;
+    if (state.gameOver) return;
+    const candidates = RANKS.filter(r => r !== state.targetRank);
+    state.targetRank = candidates[Math.floor(Math.random() * candidates.length)];
+    runState.loadedDieUsedThisFloor = true;
+    log('Loaded Die: target rerolled to ' + state.targetRank + '.');
+    render();
+  }
+
   function useSmokeBomb() {
     if (!state || state.gameOver || state.challengeOpen) return;
     if (state.currentTurn !== 0) return;
@@ -2085,6 +2540,29 @@
     render();
   }
 
+  function toggleDoubletalk() {
+    if (!hasJoker('doubletalk')) return;
+    if (state.gameOver || state.challengeOpen) return;
+    if (state.currentTurn !== 0) return;
+    if (state.doubletalkUsedThisRound) return;
+    state.doubletalkArmed = !state.doubletalkArmed;
+    log(state.doubletalkArmed ? 'Doubletalk armed: play 2-4 cards this turn.' : 'Doubletalk cancelled.');
+    render();
+  }
+
+  function useSleightOfHand() {
+    if (!hasJoker('sleightOfHand')) return;
+    if (state.gameOver || state.challengeOpen) return;
+    if (state.currentTurn !== 0) return;
+    if (state.sleightUsedThisRound) return;
+    if (state.drawPile.length === 0) return;
+    state.sleightUsedThisRound = true;
+    const card = state.drawPile.pop();
+    state.hands[0].push(card);
+    log('Sleight of Hand: drew a ' + card.rank + (card.affix ? ' (' + card.affix + ')' : '') + '.');
+    render();
+  }
+
   // Phase 4: Jack-be-Nimble — discard up to 2 Jacks from your hand.
   function useJackBeNimble() {
     if (!state || state.gameOver || state.challengeOpen) return;
@@ -2130,10 +2608,110 @@
       if (e.target === _infoModal) closeInfoModal();
     });
   }
+
+  // Phase 6: resume/restart prompt when re-entering beta with an active run.
+  // The inline script in index.html already toggles betaTesting visibility;
+  // this handler runs in addition to it and surfaces the resume modal when
+  // there's a runState to fall back into.
+  // Phase 7: pause/resume timers when leaving/returning to beta mid-run
+  let _pausedChallenge = false;
+
+  function pauseBetaRun() {
+    if (!state) return;
+    clearAllTimers();
+    const bar = document.getElementById('betaChallengeBar');
+    if (bar) bar.classList.add('hidden');
+    if (state.challengeOpen) {
+      _pausedChallenge = true;
+      state.challengeOpen = false;
+    }
+  }
+
+  function resumeBetaRun() {
+    if (!state || state.gameOver) return;
+    if (_pausedChallenge && state.lastPlay) {
+      _pausedChallenge = false;
+      // Treat the paused challenge as a no-call (timer effectively expired)
+      handlePassNoChallenge(state.lastPlay.playerIdx);
+      return;
+    }
+    // If it's a bot's active turn, schedule its play
+    if (state.currentTurn !== 0 &&
+        !state.eliminated[state.currentTurn] &&
+        !state.finished[state.currentTurn]) {
+      setTimeout(botTurn, BOT_TURN_DELAY_MS);
+    }
+    render();
+  }
+
+  // Hook back-to-lobby button to pause
+  const _betaBackBtnPause = document.getElementById('betaBackBtn');
+  if (_betaBackBtnPause) {
+    _betaBackBtnPause.addEventListener('click', () => {
+      if (runState && state) pauseBetaRun();
+    });
+  }
+
+  function showResumeModal() {
+    const modal = document.getElementById('betaResumeModal');
+    if (!modal || !runState) return;
+    // Populate context line
+    const floorEl = document.getElementById('betaResumeFloor');
+    const charEl = document.getElementById('betaResumeChar');
+    const heartsEl = document.getElementById('betaResumeHearts');
+    if (floorEl) floorEl.textContent = 'Floor ' + (runState.currentFloor || 1) + '/' + TOTAL_FLOORS;
+    if (charEl) charEl.textContent = (runState.character && runState.character.name) || 'No character';
+    if (heartsEl) heartsEl.textContent = heartsString(runState.hearts);
+    modal.classList.remove('hidden');
+  }
+  function closeResumeModal() {
+    const modal = document.getElementById('betaResumeModal');
+    if (modal) modal.classList.add('hidden');
+  }
+
+  const _betaTestBtn = document.getElementById('betaTestBtn');
+  if (_betaTestBtn) {
+    _betaTestBtn.addEventListener('click', () => {
+      // Only prompt if there's an active run worth resuming
+      if (runState) showResumeModal();
+      // Phase 7: refresh run history (intro panel)
+      renderRunHistory();
+    });
+  }
+
+  const _resumeContinueBtn = document.getElementById('betaResumeContinueBtn');
+  if (_resumeContinueBtn) {
+    _resumeContinueBtn.addEventListener('click', () => {
+      closeResumeModal();
+      resumeBetaRun();  // Phase 7: restart paused timers
+    });
+  }
+
+  const _resumeNewBtn = document.getElementById('betaResumeNewBtn');
+  if (_resumeNewBtn) {
+    _resumeNewBtn.addEventListener('click', () => {
+      closeResumeModal();
+      backToIntro();  // resets runState and shows the intro screen
+    });
+  }
+
+  // Click outside the resume modal to close it (treat as "continue")
+  const _resumeModal = document.getElementById('betaResumeModal');
+  if (_resumeModal) {
+    _resumeModal.addEventListener('click', (e) => {
+      if (e.target === _resumeModal) closeResumeModal();
+    });
+  }
   const _tt = document.getElementById('betaTattletaleBtn');
   if (_tt) _tt.addEventListener('click', useTattletale);
   document.getElementById('betaUseCounterfeitBtn').addEventListener('click', startCounterfeitPick);
   document.getElementById('betaUseJackBtn').addEventListener('click', useJackBeNimble);
   document.getElementById('betaCounterfeitCancelBtn').addEventListener('click', cancelCounterfeit);
+  const _dtBtn = document.getElementById('betaDoubletalkBtn');
+  if (_dtBtn) _dtBtn.addEventListener('click', toggleDoubletalk);
+  const _sohBtn = document.getElementById('betaSleightBtn');
+  if (_sohBtn) _sohBtn.addEventListener('click', useSleightOfHand);
+  const _ldBtn = document.getElementById('betaLoadedDieBtn');
+  if (_ldBtn) _ldBtn.addEventListener('click', useLoadedDie);
 
 })();
