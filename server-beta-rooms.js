@@ -62,6 +62,7 @@ const JOKER_CATALOG = {
   vengefulSpirit: { id: 'vengefulSpirit', name: 'Vengeful Spirit',  rarity: 'Legendary', price: 400, desc: 'If a Jack curse eliminates you, the next active player loses 2 heart-shards (cascades to a Heart on underflow).' },
   callersMark:    { id: 'callersMark',    name: "Caller's Mark",    rarity: 'Uncommon',  price: 150, desc: "First LIAR call each round: +20g if right, -15g if wrong. Rewards reads, punishes spam." },
   screamer:       { id: 'screamer',       name: 'The Screamer',     rarity: 'Mythic',    price: 500, desc: 'Once per floor: name a rank. For the rest of that round, every card of that rank in any hand is publicly revealed.' },
+  cardCounter:    { id: 'cardCounter',    name: 'Card Counter',     rarity: 'Uncommon',  price: 90,  desc: 'Always-on math overlay: see the live probability that the current target rank is still out in opponents\' hands.' },
 };
 
 // Relic catalog — permanent passive bonuses, one of each per run.
@@ -141,6 +142,7 @@ const SHOP_ITEMS = [
   { id: 'coldRead',      name: 'JOKER · Cold Read',    price: 400, desc: '[Legendary] Round start: see 1 card from each opponent.', enabled: true, type: 'joker' },
   { id: 'vengefulSpirit',name: 'JOKER · Vengeful Spirit', price: 400, desc: '[Legendary] Jack-cursed: next active player loses 2 shards (cascades to ♥).', enabled: true, type: 'joker' },
   { id: 'screamer',      name: 'JOKER · The Screamer', price: 500, desc: '[Mythic] Once per floor: name a rank, all matching cards in every hand revealed for the rest of the round.', enabled: true, type: 'joker' },
+  { id: 'cardCounter',   name: 'JOKER · Card Counter', price: 90,  desc: '[Uncommon] Always-on heatmap: probability the target rank is still out in opponents\' hands.', enabled: true, type: 'joker' },
 ];
 
 // Random events at the Event fork node.
@@ -285,11 +287,86 @@ function publicBetaState(room, requestingPlayerId) {
     myPeeks = me.pendingPeeks.slice();
     me.pendingPeeks = [];
   }
-  // Surveyor: top of draw pile (if me has it)
+  // Surveyor: top of draw pile (if me has it). Ascension tiers extend
+  // the read: tier 1 = top 2 cards, tier 2 = top 3, tier 3+ = top 5.
   let surveyorTop = null;
+  let surveyorTopList = null;
   if (me && playerHasJoker(me, 'surveyor') && room.drawPile && room.drawPile.length > 0) {
-    const top = room.drawPile[room.drawPile.length - 1];
-    surveyorTop = { rank: top.rank, affix: top.affix || null };
+    const tier = ascensionTierFor(me, 'surveyor');
+    const want = tier <= 0 ? 1 : tier === 1 ? 2 : tier === 2 ? 3 : 5;
+    const got = Math.min(want, room.drawPile.length);
+    surveyorTopList = [];
+    for (let i = 0; i < got; i++) {
+      const c = room.drawPile[room.drawPile.length - 1 - i];
+      surveyorTopList.push({ rank: c.rank, affix: c.affix || null });
+    }
+    surveyorTop = surveyorTopList[0]; // back-compat for the single-card client field
+  }
+  // Card Counter (5.5): heatmap reading — probability the target rank is
+  // still in opponents' hands. From me's POV: total target-rank copies in
+  // the round = base 6 (the round deck has 6 each of A/K/Q/10) + however
+  // many run-deck cards of that rank are owned by anyone. Subtract what
+  // me knows: target cards in me's own hand, plus any visible elsewhere
+  // (Screamer-revealed). Remaining unknowns are split between opponents'
+  // hands, the played pile, the draw pile, and the burn pile by a uniform
+  // prior — we just report "expected number of target cards in opponent
+  // hands" and the equivalent percentage of opponent hand size.
+  let targetRankReadout = null;
+  if (me && playerHasJoker(me, 'cardCounter') && room.targetRank && room.phase === 'round') {
+    const target = room.targetRank;
+    // Total copies of target in this round's deck: 6 base + any run-deck
+    // copies players own (capped at ROUND_DECK_RANK_CAP = 8 for safety).
+    let totalCopies = 6;
+    for (const pl of room.players) {
+      for (const c of (pl.runDeck || [])) {
+        if (c.rank === target) totalCopies += 1;
+      }
+    }
+    totalCopies = Math.min(totalCopies, ROUND_DECK_RANK_CAP);
+    // Subtract what me can see:
+    let known = 0;
+    if (me.hand) for (const c of me.hand) if (c.rank === target) known++;
+    // Screamer-revealed cards of target rank in OTHER hands (visible to me)
+    if (room.screamerRevealedRank === target) {
+      for (const pl of room.players) {
+        if (pl === me) continue;
+        for (const c of (pl.hand || [])) if (c.rank === target) known++;
+      }
+    }
+    // Pile + burn pile + drawPile are unknowns from me's POV unless
+    // Surveyor reveals one. Count Surveyor-known top of draw if it's
+    // target rank (cheap extra signal for stacked information builds).
+    if (surveyorTop && surveyorTop.rank === target) known++;
+    const unknown = Math.max(0, totalCopies - known);
+    // Split unknowns by where they could plausibly live: other players'
+    // hands vs. pile/burn/draw. Use the proportion of cards-in-opponent-
+    // hands relative to (opp hands + pile + draw + burn). burnedCards is
+    // out of play so it counts toward unreachable.
+    let oppHandSizes = 0;
+    for (const pl of room.players) {
+      if (pl === me) continue;
+      if (pl.eliminated) continue;
+      oppHandSizes += (pl.hand || []).length;
+    }
+    const reachable = oppHandSizes;
+    const unreachable = (room.pile || []).length +
+                        (room.drawPile || []).length +
+                        (room.burnedCards || []).length;
+    const denom = Math.max(1, reachable + unreachable);
+    const expectedInOpp = unknown * (reachable / denom);
+    targetRankReadout = {
+      target,
+      known,
+      totalCopies,
+      unknown,
+      // expected number of target-rank cards in opponents' hands right now
+      expectedInOpp: Math.round(expectedInOpp * 10) / 10,
+      // "danger" — probability AT LEAST ONE opponent hand has the rank
+      // (1 - chance all opponents hold none), rough binomial approx
+      atLeastOneProb: oppHandSizes <= 0 || unknown <= 0
+        ? 0
+        : Math.round((1 - Math.pow(1 - (reachable / denom), unknown)) * 100),
+    };
   }
   return {
     id: room.id,
@@ -311,6 +388,11 @@ function publicBetaState(room, requestingPlayerId) {
     burnedCount: room.burnedCountThisFloor || 0,
     burnedThisRound: (room.burnedCards || []).length,
     burnCap: BURN_CAP,
+    // 5.2 — spectator (eliminated-from-round) sees the draw pile contents
+    // top-first. Active players never see this array.
+    spectatorDrawPile: (me && me.eliminated && room.drawPile)
+      ? room.drawPile.slice().reverse().map(c => ({ rank: c.rank, affix: c.affix || null }))
+      : [],
     seed: room.seed || null,
     lastPlay: room.lastPlay
       ? { playerIdx: room.lastPlay.playerIdx, claim: room.lastPlay.claim, count: room.lastPlay.count }
@@ -347,6 +429,19 @@ function publicBetaState(room, requestingPlayerId) {
     // matching cards in every other player's hand. Counts only, not ids,
     // since the hidden cards never leave the server.
     screamerRevealedRank: room.screamerRevealedRank || null,
+    // 5.2 — Spectator mode: a player who was round-eliminated by the
+    // Jack curse (but whose run is still alive — `finishedThisRound`
+    // means they finished cleanly; `eliminated && hearts > 0`-equivalent
+    // is "round-out, run-on") gets extra visibility — opponents' real
+    // hands and the draw pile. We expose this only to that specific
+    // viewer by checking `me.eliminated`. Keeps run information secret
+    // for everyone else.
+    //
+    // The `eliminated` field is overloaded: it flips true on Jack curse
+    // mid-round AND on hearts-going-to-0 (run end). We treat them the
+    // same here since both states mean "the round is over for me." The
+    // run-end variant doesn't need spectator info but it's harmless.
+    spectator: !!(me && me.eliminated),
     players: room.players.map(p => ({
       id: p.id,
       name: p.name,
@@ -362,6 +457,12 @@ function publicBetaState(room, requestingPlayerId) {
       eliminated: !!p.eliminated,
       finishedThisRound: !!p.finishedThisRound,
       connected: !!p.connected,
+      // Spectator-only field: the actual contents of this player's hand,
+      // delivered only when the requesting player is round-eliminated.
+      // Otherwise [], so nothing leaks to active players.
+      spectatorHand: (me && me.eliminated && p !== me && p.hand)
+        ? p.hand.map(c => ({ rank: c.rank, affix: c.affix || null }))
+        : [],
       // Pad to 5 slots so any legacy 2-slot player object on the server
       // surfaces as a full 5-slot UI on the client. Doesn't mutate the
       // server-side array — the migration call elsewhere does that.
@@ -386,8 +487,13 @@ function publicBetaState(room, requestingPlayerId) {
           hand: (me.hand || []).map(c => ({ rank: c.rank, id: c.id, owner: c.owner, affix: c.affix || null, cursedTurnsLeft: c.cursedTurnsLeft || 0 })),
           runDeck: (me.runDeck || []).map(c => ({ rank: c.rank, id: c.id, affix: c.affix || null })),
           inventory: Object.assign({}, me.inventory || {}),
-          jokers: (me.jokers || []).map(j => j ? { id: j.id, name: j.name, rarity: j.rarity, desc: j.desc } : null),
+          jokers: (me.jokers || []).map(j => j ? {
+            id: j.id, name: j.name, rarity: j.rarity, desc: j.desc,
+            // 5.8 — pass through this player's ascension tier for the joker.
+            ascensionTier: ascensionTierFor(me, j.id),
+          } : null),
           relics: (me.relics || []).slice(),
+          jokerAscensionTiers: Object.assign({}, me.jokerAscensionTiers || {}),
           tattletaleCharges: (room.tattletaleChargesFloor && room.tattletaleChargesFloor[me.id]) || 0,
           screamerCharges:   (room.screamerChargesFloor   && room.screamerChargesFloor[me.id])   || 0,
           loadedDieUsed: !!(room.loadedDieUsedFloor && room.loadedDieUsedFloor[me.id]),
@@ -403,6 +509,9 @@ function publicBetaState(room, requestingPlayerId) {
           targetLockedUntilLiar: !!room.targetLockedUntilLiar,
           peeks: myPeeks,
           surveyorTop,
+          surveyorTopList, // ascension-extended list (tier 0 → 1 card, tier 1 → 2, tier 2 → 3, tier 3+ → 5)
+          // Card Counter heatmap (null unless the player owns the joker)
+          targetRankReadout,
           forkPick: (room.forkPicks && room.forkPicks[me.id]) || null,
           eventResult: (room.eventResults && room.eventResults[me.id]) || null,
           pendingService: (room.pendingServices && room.pendingServices[me.id]) || null,
@@ -476,9 +585,22 @@ function playerHasJoker(p, jokerId) {
 function playerHasRelic(p, relicId) {
   return p.relics && p.relics.includes(relicId);
 }
+
+// 5.8 — Ascension tier the player has on a particular joker (0 if they
+// don't own this joker or haven't won runs with it). Tiers come from the
+// auth-backend lookup that fires on join (server.js _attachAscensions);
+// missing dict means tier 0 across the board.
+function ascensionTierFor(p, jokerId) {
+  if (!p || !p.jokerAscensionTiers) return 0;
+  return Math.max(0, Math.min(4, p.jokerAscensionTiers[jokerId] || 0));
+}
 function challengeWindowMsFor(p) {
   let ms = CHALLENGE_WINDOW_MS;
-  if (playerHasJoker(p, 'slowHand')) ms = SLOW_HAND_WINDOW_MS;
+  if (playerHasJoker(p, 'slowHand')) {
+    // Ascension: each tier adds 2 more seconds. Tier 0 = 10s, tier 3 = 16s.
+    const tier = ascensionTierFor(p, 'slowHand');
+    ms = SLOW_HAND_WINDOW_MS + (tier * 2000);
+  }
   // Pocket Watch stacks
   const pw = (p.relics || []).filter(r => r === 'pocketWatch').length;
   ms += pw * POCKET_WATCH_BONUS_MS;
@@ -782,7 +904,12 @@ function startRun(room) {
   room.runOver = false;
   room.runWinnerId = null;
   room.currentFloorModifier = null;
-  room.seed = _generateRunSeed();
+  // Honor a pre-set seed (replay flow). startRunWithSeed sets room.seed
+  // before calling startRun via setRoomSeed; this branch picks it up.
+  // Otherwise roll a fresh seed.
+  if (!room.seed || typeof room.seed !== 'string' || room.seed.length === 0) {
+    room.seed = _generateRunSeed();
+  }
   room.currentBoss = isBossFloor(1) ? getBoss(1) : null;
   // Per-floor charge counters — must exist before startRound runs so any
   // floor-1 char that grants Tattletale (e.g. The Sharp) sees a real charge.
@@ -808,7 +935,7 @@ function startRun(room) {
     // (currently The Sharp). Without this, floor 1's charge counter is 0
     // because the per-floor seeder only runs when ADVANCING to a new floor.
     if (playerHasJoker(p, 'tattletale')) {
-      room.tattletaleChargesFloor[p.id] = 1;
+      room.tattletaleChargesFloor[p.id] = 1 + ascensionTierFor(p, 'tattletale');
     }
     if (playerHasJoker(p, 'screamer')) {
       room.screamerChargesFloor[p.id] = 1;
@@ -1803,7 +1930,7 @@ function maybeAdvanceFromFork(room) {
   room.loadedDieUsedFloor = {};
   for (const p of room.players) {
     if (playerHasJoker(p, 'tattletale')) {
-      room.tattletaleChargesFloor[p.id] = 1;
+      room.tattletaleChargesFloor[p.id] = 1 + ascensionTierFor(p, 'tattletale');
     }
     if (playerHasJoker(p, 'screamer')) {
       room.screamerChargesFloor = room.screamerChargesFloor || {};
@@ -1830,6 +1957,25 @@ function maybeAdvanceFromFork(room) {
   // Expand joker slots for the new act
   for (const p of room.players) ensureJokerSlots(p, room.currentFloor);
   log(room, `Advancing to Floor ${room.currentFloor}.`);
+  // 5.6 — Last Stand: the FIRST time per run a player enters a floor at
+  // exactly 1 Heart (and isn't eliminated), they get a free Smoke Bomb
+  // OR +50g (50/50). The flag lives on the player so it can never fire
+  // twice in the same run, even if they roller-coaster back to 1 Heart
+  // multiple times.
+  for (const p of room.players) {
+    if (p.eliminated) continue;
+    if (p.hearts !== 1) continue;
+    if (p._lastStandUsed) continue;
+    p._lastStandUsed = true;
+    if (Math.random() < 0.5) {
+      p.inventory = p.inventory || {};
+      p.inventory.smokeBomb = (p.inventory.smokeBomb || 0) + 1;
+      log(room, `${p.name} - Last Stand: free Smoke Bomb (1 Heart, first time).`);
+    } else {
+      const got = applyGoldGain(p, 50, 'lastStand');
+      log(room, `${p.name} - Last Stand: +${got}g (1 Heart, first time).`);
+    }
+  }
   startRound(room);
 }
 
@@ -2017,7 +2163,7 @@ function shopBuy(room, playerId, itemId) {
     p.gold -= realPrice;
     p.jokers[slotIdx] = { ...data };
     if (item.id === 'tattletale') {
-      room.tattletaleChargesFloor[p.id] = 1;
+      room.tattletaleChargesFloor[p.id] = 1 + ascensionTierFor(p, 'tattletale');
     }
     if (item.id === 'screamer') {
       room.screamerChargesFloor = room.screamerChargesFloor || {};
@@ -2209,6 +2355,24 @@ function addPlayer(room, socket, name, user) {
   if (!room.hostId) room.hostId = player.id;
   log(room, `${displayName} joined the room.`);
   return { ok: true, player };
+}
+
+// 5.3 — Pre-seed the room's run seed before startRun fires. Host-only
+// (only the host should pin the seed for everyone). Restricted to the
+// "lobby" phase so seeds can't be swapped mid-run. Letters/digits, no
+// dashes — we strip dashes if the user pasted a "4F2K-9A7B" seed.
+function setRoomSeed(room, playerId, seedRaw) {
+  if (room.hostId !== playerId) return { error: 'Host only.' };
+  if (room.runStarted) return { error: 'Run already started.' };
+  const seed = (seedRaw || '').toString().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (seed.length < 4 || seed.length > 24) return { error: 'Bad seed format.' };
+  // Re-insert the canonical dash form for display consistency with
+  // _generateRunSeed (8 chars + dash + 8 chars). Shorter seeds keep their
+  // raw form.
+  const display = seed.length === 8 ? seed.slice(0, 4) + '-' + seed.slice(4) : seed;
+  room.seed = display;
+  log(room, `Seed set to ${display} for the next run.`);
+  return { ok: true };
 }
 
 function pickCharacter(room, playerId, characterId) {
@@ -2747,6 +2911,7 @@ module.exports = {
   useSleightOfHand,
   useScreamer,
   setWhisperDirection,
+  setRoomSeed,
   // Admin
   adminAddGold,
   adminSetHearts,

@@ -145,6 +145,37 @@
       const codeEl = document.getElementById('betaMpRoomCode');
       if (codeEl) codeEl.textContent = roomId;
       showLobby();
+      // 5.3 — If we have a pending seed (from "Replay this seed" or a
+      // ?seed=... URL), and we just created/joined a room, fire the
+      // setSeed action. Server enforces host-only + lobby-only.
+      let pendingSeed = null;
+      try {
+        pendingSeed = window._lugenPendingSeed || null;
+        if (!pendingSeed) {
+          const usp = new URLSearchParams(location.search);
+          pendingSeed = usp.get('seed');
+        }
+      } catch (_) {}
+      if (pendingSeed) {
+        socket.emit('beta:setSeed', { seed: pendingSeed });
+        try {
+          window._lugenPendingSeed = null;
+          // Strip the seed query so a refresh doesn't re-apply.
+          if (location.search.includes('seed=')) {
+            const url = new URL(location.href);
+            url.searchParams.delete('seed');
+            history.replaceState({}, '', url.toString());
+          }
+        } catch (_) {}
+      }
+      // 5.7 — daily-challenge character auto-pick (only meaningful right
+      // after createRoom from the daily button).
+      let pendingChar = null;
+      try { pendingChar = window._lugenPendingCharacter || null; } catch (_) {}
+      if (pendingChar) {
+        socket.emit('beta:pickCharacter', { characterId: pendingChar });
+        try { window._lugenPendingCharacter = null; } catch (_) {}
+      }
     });
 
     socket.on('beta:state', (state) => {
@@ -360,19 +391,33 @@
           div.className = 'inline-flex items-center gap-1 px-2 py-1 rounded bg-purple-900/40 cursor-pointer hover:bg-purple-800/60 transition select-none';
           div.style.cursor = 'pointer';
           div.style.pointerEvents = 'auto';
-          div.title = 'Click for details — ' + j.name;
+          // 5.8 — Ascension badge: ★1 / ★2 / ★3 / ★4. Cosmetic flair plus
+          // mechanical: tier directly drives Surveyor's read depth, Slow
+          // Hand's window, Tattletale's charges per floor.
+          const tier = j.ascensionTier || 0;
+          const tierColors = ['', 'bg-emerald-600', 'bg-blue-600', 'bg-amber-500', 'bg-rose-500'];
+          const tierText = ['', '★1', '★2', '★3', '★4'];
+          const tierBadge = tier > 0
+            ? '<span class="ml-1 text-[9px] font-bold px-1 rounded ' + tierColors[tier] +
+              ' text-white pointer-events-none" style="pointer-events:none;">' +
+              tierText[tier] + '</span>'
+            : '';
+          div.title = 'Click for details — ' + j.name + (tier > 0 ? ' (Ascend ' + tier + ')' : '');
           div.setAttribute('role', 'button');
           div.setAttribute('tabindex', '0');
           // pe-style on children so clicks always land on the tile div.
           const pe = ' style="pointer-events:none;"';
           div.innerHTML = '<span class="font-bold text-purple-200 pointer-events-none"' + pe + '>&#127183; ' +
-                          escapeHtml(j.name) + '</span>';
+                          escapeHtml(j.name) + '</span>' + tierBadge;
           // Direct .onclick (more reliable than addEventListener for this).
           const localJ = j;
           div.onclick = function (e) {
             if (e && e.preventDefault) e.preventDefault();
             if (e && e.stopPropagation) e.stopPropagation();
-            const subtitle = '[' + (localJ.rarity || 'Joker') + '] · slot ' + (i + 1);
+            const ascendNote = (localJ.ascensionTier || 0) > 0
+              ? ' · ★' + localJ.ascensionTier + ' Ascended (buffed)'
+              : '';
+            const subtitle = '[' + (localJ.rarity || 'Joker') + '] · slot ' + (i + 1) + ascendNote;
             // Reuse the shared modal exposed by beta.js. Plain-alert
             // fallback if it isn't loaded for any reason.
             if (typeof window.lugenShowInfoModal === 'function') {
@@ -392,13 +437,37 @@
         else        jokerRow.appendChild(div);
       }
     }
-    // Surveyor display
+    // Surveyor display — multi-card if ascended.
     const surv = document.getElementById('betaMpSurveyor');
     if (surv) {
-      if (s.mine && s.mine.surveyorTop) {
+      const list = s.mine && s.mine.surveyorTopList;
+      if (list && list.length > 0) {
+        surv.classList.remove('hidden');
+        const ranks = list.map(c => '<b>' + escapeHtml(c.rank) + '</b>').join(' &rarr; ');
+        surv.innerHTML = '&#128270; Top: ' + ranks;
+      } else if (s.mine && s.mine.surveyorTop) {
         surv.classList.remove('hidden');
         surv.innerHTML = '&#128270; Top: <b>' + escapeHtml(s.mine.surveyorTop.rank) + '</b>';
       } else surv.classList.add('hidden');
+    }
+    // Card Counter heatmap (5.5) — visible only when the joker is held
+    // and a target rank is rolled.
+    const heatmap = document.getElementById('betaMpCardCounter');
+    if (heatmap) {
+      const r = s.mine && s.mine.targetRankReadout;
+      if (!r) {
+        heatmap.classList.add('hidden');
+      } else {
+        heatmap.classList.remove('hidden');
+        // Color the % by danger band: green <30, yellow 30-60, red >60.
+        const pct = r.atLeastOneProb || 0;
+        const tone = pct >= 60 ? 'text-rose-300' : pct >= 30 ? 'text-amber-300' : 'text-emerald-300';
+        heatmap.innerHTML =
+          '<span class="text-cyan-200">&#129518; Counter:</span> ' +
+          'unknown <b>' + r.unknown + '</b>/' + r.totalCopies + ' &middot; ' +
+          'expect <b>' + r.expectedInOpp + '</b> in opp &middot; ' +
+          '<span class="' + tone + '">' + pct + '%</span> chance someone holds a ' + escapeHtml(r.target);
+      }
     }
     // Tattletale button
     const ttBtn = document.getElementById('betaMpTattletaleBtn');
@@ -798,6 +867,45 @@
   }
 
 
+  // Synergy hints (5.4): if a joker for sale pairs well with one you
+  // already own, the row gets a "✨ synergy" badge so newer players can
+  // spot builds emerging. Pure UI signal — doesn't change pricing or
+  // weights.
+  // Bidirectional pairs: include both directions for simple lookup.
+  const SYNERGY_PAIRS = {
+    // Information stack — scouting feeds bluff confidence
+    surveyor:      ['eavesdropper', 'tattletale', 'coldRead', 'cardCounter'],
+    eavesdropper:  ['surveyor', 'tattletale', 'coldRead'],
+    tattletale:    ['surveyor', 'eavesdropper', 'coldRead', 'screamer'],
+    coldRead:      ['surveyor', 'eavesdropper', 'tattletale', 'cardCounter'],
+    screamer:      ['tattletale', 'coldRead'],
+    cardCounter:   ['surveyor', 'coldRead'],
+    // Jack management — Safety Net + Scapegoat survives Jack-spam plays
+    safetyNet:     ['scapegoat', 'blackHole'],
+    scapegoat:     ['safetyNet', 'blackHole'],
+    blackHole:     ['safetyNet', 'scapegoat'],
+    // Tempo / aggression — Spiked Trap punishes everyone, Hot Seat speeds
+    // them up, Slow Hand gives YOU more think time.
+    spikedTrap:    ['hotSeat', 'slowHand', 'taxman'],
+    hotSeat:       ['spikedTrap', 'slowHand'],
+    slowHand:      ['spikedTrap', 'hotSeat'],
+    taxman:        ['spikedTrap', 'vengefulSpirit'],
+    vengefulSpirit:['taxman', 'safetyNet'],
+    // Doubletalk + Sleight = bigger plays + extra cards = sustained pressure
+    doubletalk:    ['sleightOfHand', 'callersMark'],
+    sleightOfHand: ['doubletalk'],
+    callersMark:   ['doubletalk', 'eavesdropper'],
+  };
+  function _ownedJokerIds() {
+    const my = (lastState && lastState.mine && lastState.mine.jokers) || [];
+    return my.filter(j => !!j).map(j => j.id);
+  }
+  function _synergyMatches(forItemId) {
+    const owned = _ownedJokerIds();
+    const partners = SYNERGY_PAIRS[forItemId] || [];
+    return partners.filter(pid => owned.includes(pid));
+  }
+
   // Build a single SP-style shop row for an item.
   function _buildMpShopRow(item, me) {
     const row = document.createElement('div');
@@ -815,10 +923,21 @@
                      (item.type === 'joker' && slotsFull);
     let btnLabel = !item.enabled ? 'Soon' : equipped ? 'Equipped' : ownedRelic ? 'Owned'
                   : (item.type === 'joker' && slotsFull) ? 'Slots full' : 'Buy';
+    // Synergy: if this is a joker for sale and the player owns at least
+    // one synergistic joker, surface a small badge above the description.
+    const synMatches = item.type === 'joker' ? _synergyMatches(item.id) : [];
+    const synBadge = synMatches.length > 0
+      ? '<div class="inline-block text-[10px] uppercase tracking-widest font-bold ' +
+          'bg-fuchsia-700/70 text-fuchsia-100 px-1.5 py-0.5 rounded mb-1" ' +
+          'title="Pairs well with: ' + escapeHtml(synMatches.join(', ')) + '">' +
+          '&#10024; Synergy &times; ' + synMatches.length + '</div>'
+      : '';
+    const ringClass = synMatches.length > 0 ? ' ring-1 ring-fuchsia-500/40' : '';
     row.className = 'bg-black/40 hover:bg-black/50 transition p-3 rounded-xl border border-white/10' +
-                    (item.enabled ? '' : ' opacity-60');
+                    ringClass + (item.enabled ? '' : ' opacity-60');
     const priceColor = canAfford ? 'bg-yellow-400 text-black' : 'bg-rose-500 text-white';
     row.innerHTML =
+      synBadge +
       '<div class="font-bold">' + escapeHtml(item.name) + '</div>' +
       '<div class="text-xs text-emerald-200 mt-1 mb-2">' + escapeHtml(item.desc) + '</div>' +
       '<div class="flex items-center justify-between">' +
@@ -1139,6 +1258,80 @@
     if (passBtn) passBtn.disabled = !myCall;
     if (liarBtn) liarBtn.disabled = !myCall;
 
+    // 5.2 — Spectator overlay for round-eliminated players. Lights up
+    // every opponent tile with their real hand contents, shows the draw
+    // pile, and runs a small "guess: bluff or truth?" mini-game on every
+    // play that crops up while you watch. Pure local — guesses don't
+    // affect the run, just feed bragging rights.
+    const specEl = document.getElementById('betaMpSpectator');
+    if (specEl) {
+      if (s.spectator) {
+        specEl.classList.remove('hidden');
+        const opps = s.players.filter(pp => pp.id !== myPlayerId && !pp.eliminated && pp.spectatorHand);
+        const oppHtml = opps.map(pp => {
+          const cards = (pp.spectatorHand || []).map(c =>
+            '<span class="inline-block bg-amber-800 text-white text-xs px-1.5 py-0.5 rounded m-0.5" title="' +
+            (c.affix ? 'Affix: ' + escapeHtml(c.affix) : 'plain') + '">' +
+            escapeHtml(c.rank) + (c.affix ? '*' : '') + '</span>'
+          ).join('');
+          return '<div class="bg-black/30 p-2 rounded mb-1"><b>' + escapeHtml(pp.name) +
+                 '</b> <span class="text-white/40 text-[10px]">(' + (pp.spectatorHand || []).length + ' cards)</span><div class="mt-1">' +
+                 (cards || '<i class="text-white/40">empty</i>') + '</div></div>';
+        }).join('');
+        const draw = (s.spectatorDrawPile || []).slice(0, 12);
+        const drawHtml = draw.map(c =>
+          '<span class="inline-block bg-cyan-800 text-white text-xs px-1.5 py-0.5 rounded m-0.5">' +
+          escapeHtml(c.rank) + (c.affix ? '*' : '') + '</span>').join('') ||
+          '<i class="text-white/40">empty</i>';
+        // Predict mini-game: when a play just landed and we haven't seen
+        // it resolved yet, offer a bluff/truth guess. Cosmetic only.
+        const predictId = 'betaMpSpectatorPredict';
+        let predictHtml = '';
+        if (s.lastPlay && s.challengeOpen) {
+          const lp = s.lastPlay;
+          predictHtml =
+            '<div class="bg-purple-900/40 border border-purple-400 p-2 rounded mb-2">' +
+              '<div class="text-xs mb-1">' + escapeHtml(s.players[lp.playerIdx]?.name || '?') +
+              ' just played ' + lp.count + ' as <b>' + escapeHtml(lp.claim) + '</b>. Bluff or truth?</div>' +
+              '<button data-spec-guess="bluff" class="text-xs bg-rose-700 hover:bg-rose-600 px-2 py-1 rounded mr-2">Bluff</button>' +
+              '<button data-spec-guess="truth" class="text-xs bg-emerald-700 hover:bg-emerald-600 px-2 py-1 rounded">Truth</button>' +
+              '<span id="' + predictId + 'Score" class="ml-3 text-xs text-emerald-300"></span>' +
+            '</div>';
+        }
+        specEl.innerHTML =
+          '<h4 class="font-bold text-amber-300 mb-2">&#128065; Spectator view</h4>' +
+          predictHtml +
+          '<div class="text-[10px] uppercase tracking-widest text-white/50 mb-1">Opponents\' hands</div>' +
+          (oppHtml || '<i class="text-white/40">no opponents in view</i>') +
+          '<div class="text-[10px] uppercase tracking-widest text-white/50 mb-1 mt-2">Draw pile (top-first)</div>' +
+          '<div>' + drawHtml + '</div>';
+        // Wire prediction buttons (one-shot per play)
+        if (!window._lugenSpecPredictions) window._lugenSpecPredictions = { right: 0, wrong: 0, pending: null };
+        const stats = window._lugenSpecPredictions;
+        const scoreEl = document.getElementById(predictId + 'Score');
+        if (scoreEl) {
+          const total = stats.right + stats.wrong;
+          scoreEl.textContent = total > 0
+            ? 'Predictions: ' + stats.right + '/' + total + ' (' + Math.round(100 * stats.right / total) + '%)'
+            : '';
+        }
+        specEl.querySelectorAll('button[data-spec-guess]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            if (stats.pending) return; // already guessed for this play
+            stats.pending = {
+              guess: btn.dataset.specGuess,
+              cardIds: (s.lastPlay.cardIds || []).slice(),
+              claim: s.lastPlay.claim,
+            };
+            btn.textContent = '✓ ' + btn.textContent;
+            specEl.querySelectorAll('button[data-spec-guess]').forEach(b => { b.disabled = true; });
+          });
+        });
+      } else {
+        specEl.classList.add('hidden');
+        specEl.innerHTML = '';
+      }
+    }
     // Status text
     const statusEl = document.getElementById('betaMpStatus');
     if (statusEl) {
@@ -1213,10 +1406,49 @@
       ? (iWon ? 'You won the run!' : `${winnerName} won the run`)
       : 'Run over';
     if (textEl) {
-      textEl.innerHTML = lastState.players.map(p =>
+      const seed = lastState.seed || '';
+      const seedShareUrl = seed
+        ? location.origin + location.pathname + '?seed=' + encodeURIComponent(seed) + '#beta'
+        : null;
+      let html = lastState.players.map(p =>
         '<div>' + escapeHtml(p.name) + ' — Floor ' + lastState.currentFloor +
         ' (♥' + p.hearts + ', ' + p.gold + 'g)</div>'
       ).join('');
+      if (seed) {
+        html += '<div class="mt-3 p-3 bg-black/40 rounded-lg text-xs">' +
+          '<div class="mb-1 text-emerald-200">Run seed:</div>' +
+          '<code class="text-yellow-300 font-mono">' + escapeHtml(seed) + '</code>' +
+          '<div class="flex gap-2 mt-2">' +
+            '<button id="betaMpReplaySeedBtn" class="bg-blue-600 hover:bg-blue-500 px-3 py-1 rounded text-xs font-bold">Replay this seed</button>' +
+            '<button id="betaMpCopySeedLinkBtn" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded text-xs font-bold">Copy share link</button>' +
+          '</div>' +
+        '</div>';
+      }
+      textEl.innerHTML = html;
+      // Wire the buttons. Replay = leave run, return to lobby with seed
+      // pre-filled in window._lugenPendingSeed for the next createRoom.
+      const rb = document.getElementById('betaMpReplaySeedBtn');
+      if (rb) rb.addEventListener('click', () => {
+        try { window._lugenPendingSeed = seed; } catch (_) {}
+        if (socket) socket.emit('beta:leave');
+        forgetSession();
+        myRoomId = null; myPlayerId = null; lastState = null;
+        hideAllMpScreens();
+        showEntry();
+        const hint = document.getElementById('betaMpEntryHint');
+        if (hint) hint.textContent = 'Seed ready: create a room and the host will pin ' + seed + '.';
+      });
+      const cb = document.getElementById('betaMpCopySeedLinkBtn');
+      if (cb && seedShareUrl) cb.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(seedShareUrl);
+          cb.textContent = 'Copied!';
+          setTimeout(() => { cb.textContent = 'Copy share link'; }, 1500);
+        } catch (e) {
+          // Fallback: show the link in a prompt the user can copy from.
+          window.prompt('Copy this seed link:', seedShareUrl);
+        }
+      });
     }
 
     // Report progression for the local player (re-uses solo endpoint)
@@ -1228,6 +1460,11 @@
     if (!token) return;
     try {
       const me = lastState.players.find(p => p.id === myPlayerId) || {};
+      // 5.8 — collect equipped joker IDs at run end so the auth backend
+      // can bump per-joker win counts on victories. Only IDs are sent;
+      // server validates + caps the array.
+      const myJokerIds = (lastState.mine && lastState.mine.jokers || [])
+        .filter(j => j && j.id).map(j => j.id);
       await fetch('/api/beta/run-history', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
@@ -1239,6 +1476,7 @@
           hearts: me.hearts || 0,
           gold: me.gold || 0,
           mode: 'pvp',
+          jokersAtEnd: myJokerIds,
         }),
       });
       await fetch('/api/beta/progression', {
@@ -1274,6 +1512,138 @@
         socket.emit('beta:createRoom', { name: nameEl ? nameEl.value : '' });
       });
     }
+
+    // 5.7 — Daily challenge UI. Cached for the page session so we only hit
+    // the endpoint once per visit (it doesn't change until UTC midnight).
+    let _dailyCache = null;
+    async function _fetchDaily() {
+      if (_dailyCache) return _dailyCache;
+      try {
+        const r = await fetch('/api/beta/daily');
+        if (!r.ok) return null;
+        _dailyCache = await r.json();
+        return _dailyCache;
+      } catch (e) { return null; }
+    }
+    function _renderDaily(daily) {
+      const wrap = document.getElementById('betaMpDaily');
+      const desc = document.getElementById('betaMpDailyDesc');
+      if (!wrap || !desc || !daily) return;
+      wrap.classList.remove('hidden');
+      const charNames = {
+        ace: 'The Ace', trickster: 'The Trickster', hoarder: 'The Hoarder',
+        banker: 'The Banker', bait: 'The Bait', gambler: 'The Gambler',
+        sharp: 'The Sharp', whisper: 'The Whisper', randomExe: 'RANDOM.EXE',
+      };
+      const modNames = {
+        foggy: 'Foggy', greedy: 'Greedy', brittle: 'Brittle',
+        echoing: 'Echoing', silent: 'Silent', tariff: 'Tariff',
+      };
+      desc.innerHTML =
+        '<div>Date: <code>' + escapeHtml(daily.date) + '</code> &middot; Seed: <code>' + escapeHtml(daily.seed) + '</code></div>' +
+        '<div>Character: <b>' + escapeHtml(charNames[daily.characterId] || daily.characterId) + '</b></div>' +
+        '<div>First-floor twist: <b>' + escapeHtml(modNames[daily.floor1Modifier] || daily.floor1Modifier) + '</b> ' +
+        '<span class="text-pink-200/70">(advisory — Act 1 doesn\'t roll modifiers in code, but try beating it as if it did)</span></div>';
+    }
+    const dailyShowBtn = document.getElementById('betaMpDailyShowBtn');
+    if (dailyShowBtn) dailyShowBtn.addEventListener('click', async () => {
+      const d = await _fetchDaily();
+      if (d) _renderDaily(d);
+    });
+    const dailyStartBtn = document.getElementById('betaMpDailyStartBtn');
+    if (dailyStartBtn) dailyStartBtn.addEventListener('click', async () => {
+      const d = await _fetchDaily();
+      if (!d) return;
+      ensureSocket();
+      const nameEl = document.getElementById('betaMpName');
+      // Stash the daily seed + character so the joined-room handler picks
+      // them up (same machinery as 5.3 replay).
+      try {
+        window._lugenPendingSeed = d.seed;
+        window._lugenPendingCharacter = d.characterId;
+      } catch (_) {}
+      socket.emit('beta:createRoom', { name: nameEl ? nameEl.value : '' });
+    });
+
+    // 5.1 — Profile screen. Pulls progression + run-history + joker-wins
+    // and renders a single modal. Pure read-only (server endpoints exist
+    // already; we just stitch them together).
+    const profileBtn = document.getElementById('betaMpProfileBtn');
+    const profileModal = document.getElementById('betaMpProfileModal');
+    const profileClose = document.getElementById('betaMpProfileCloseBtn');
+    if (profileClose && profileModal) {
+      profileClose.addEventListener('click', () => profileModal.classList.add('hidden'));
+      profileModal.addEventListener('click', (e) => {
+        if (e.target === profileModal) profileModal.classList.add('hidden');
+      });
+    }
+    async function _fetchJSON(url) {
+      const token = getAuthToken();
+      if (!token) return null;
+      try {
+        const r = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+        if (!r.ok) return null;
+        return await r.json();
+      } catch (e) { return null; }
+    }
+    function _ascendStr(t) {
+      return t > 0 ? ' <span class="text-amber-300 font-bold">★' + t + '</span>' : '';
+    }
+    if (profileBtn) profileBtn.addEventListener('click', async () => {
+      const content = document.getElementById('betaMpProfileContent');
+      if (!content || !profileModal) return;
+      content.innerHTML = '<div class="italic text-white/60">Loading...</div>';
+      profileModal.classList.remove('hidden');
+      if (!getAuthToken()) {
+        content.innerHTML = '<div class="text-rose-300">Sign in to see your profile (progression is stored server-side).</div>';
+        return;
+      }
+      const [progression, hist, jokers] = await Promise.all([
+        _fetchJSON('/api/beta/progression'),
+        _fetchJSON('/api/beta/run-history'),
+        _fetchJSON('/api/beta/joker-wins'),
+      ]);
+      const history = (hist && hist.history) || [];
+      const totalRuns = history.length;
+      const won = history.filter(r => r.result === 'won').length;
+      const winRate = totalRuns > 0 ? Math.round(100 * won / totalRuns) + '%' : '—';
+      const maxFloor = history.reduce((a, r) => Math.max(a, r.maxFloor || 0), 0) || 0;
+      const charWins = {};
+      for (const r of history) {
+        if (r.result === 'won' && r.characterId) {
+          charWins[r.characterId] = (charWins[r.characterId] || 0) + 1;
+        }
+      }
+      const charNames = {
+        ace: 'The Ace', trickster: 'The Trickster', hoarder: 'The Hoarder',
+        banker: 'The Banker', bait: 'The Bait', gambler: 'The Gambler',
+        sharp: 'The Sharp', whisper: 'The Whisper', randomExe: 'RANDOM.EXE',
+      };
+      const charRows = Object.keys(charNames).map(id => {
+        const w = charWins[id] || 0;
+        return '<div class="flex justify-between"><span>' + escapeHtml(charNames[id]) +
+               '</span><span class="text-emerald-300 font-mono">' + w + ' wins</span></div>';
+      }).join('');
+      const tiers = (jokers && jokers.tiers) || {};
+      const wins = (jokers && jokers.wins) || {};
+      const jokerRows = Object.keys(wins).sort((a, b) => wins[b] - wins[a]).map(id => {
+        const t = tiers[id] || 0;
+        return '<div class="flex justify-between"><span>' + escapeHtml(id) + _ascendStr(t) +
+               '</span><span class="text-emerald-300 font-mono">' + wins[id] + 'w</span></div>';
+      }).join('') || '<div class="italic text-white/40">No joker wins yet — finish a run with a joker equipped.</div>';
+      content.innerHTML =
+        '<div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">' +
+          '<div class="bg-black/30 p-2 rounded"><div class="text-[10px] uppercase tracking-widest text-white/50">Total runs</div><div class="text-2xl font-bold">' + totalRuns + '</div></div>' +
+          '<div class="bg-black/30 p-2 rounded"><div class="text-[10px] uppercase tracking-widest text-white/50">Wins</div><div class="text-2xl font-bold text-emerald-300">' + won + '</div></div>' +
+          '<div class="bg-black/30 p-2 rounded"><div class="text-[10px] uppercase tracking-widest text-white/50">Win rate</div><div class="text-2xl font-bold">' + winRate + '</div></div>' +
+          '<div class="bg-black/30 p-2 rounded"><div class="text-[10px] uppercase tracking-widest text-white/50">Best floor</div><div class="text-2xl font-bold text-amber-300">' + maxFloor + '/9</div></div>' +
+        '</div>' +
+        '<h4 class="font-bold mb-1 text-emerald-200">Character wins</h4>' +
+        '<div class="bg-black/30 p-3 rounded mb-4 space-y-1 text-xs">' + charRows + '</div>' +
+        '<h4 class="font-bold mb-1 text-emerald-200">Joker ascensions</h4>' +
+        '<div class="bg-black/30 p-3 rounded mb-4 space-y-1 text-xs">' + jokerRows + '</div>' +
+        '<div class="text-[10px] text-white/40 italic">Ascend tiers: 1 win = ★1, 3 wins = ★2, 6 wins = ★3, 10+ = ★4. Tiers buff the joker (e.g. Surveyor sees more cards, Tattletale gets more charges, Slow Hand has a wider window).</div>';
+    });
 
     const joinBtn = document.getElementById('betaMpJoinBtn');
     if (joinBtn) {

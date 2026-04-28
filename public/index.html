@@ -659,6 +659,7 @@
     <h3 class="text-xl font-bold mb-2">Beta Multiplayer (PvP)</h3>
     <p class="text-xs text-emerald-200 mb-4">2&ndash;4 humans share a 9-floor run. Each player has their own personal deck, hearts, and gold. Jokers, consumables, shop and forks are wired up &mdash; bring your favorite build.</p>
     <div id="betaMpError" class="hidden bg-rose-700/40 border border-rose-400 text-rose-100 px-3 py-2 rounded mb-3 text-sm"></div>
+    <p id="betaMpEntryHint" class="hidden text-xs text-amber-300 mb-3"></p>
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
       <div class="bg-black/30 p-4 rounded-lg">
         <h4 class="font-bold mb-2">Create room</h4>
@@ -670,6 +671,23 @@
         <input id="betaMpJoinCode" type="text" placeholder="Room code" class="w-full mb-2 px-3 py-2 rounded bg-black/40 border border-white/10 text-sm uppercase" />
         <button id="betaMpJoinBtn" class="w-full bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded font-bold transition">Join</button>
       </div>
+    </div>
+    <div id="betaMpDaily" class="hidden bg-pink-900/30 border border-pink-400/40 p-4 rounded-lg mb-2">
+      <h4 class="font-bold text-pink-200 mb-1">&#127876; Daily Challenge</h4>
+      <div id="betaMpDailyDesc" class="text-xs text-pink-100 mb-2"></div>
+      <button id="betaMpDailyStartBtn" class="bg-pink-600 hover:bg-pink-500 text-white px-3 py-1 rounded text-sm font-bold transition">Start today's daily run</button>
+    </div>
+    <button id="betaMpDailyShowBtn" class="text-xs text-white/40 hover:text-white/70 underline">Show today's daily challenge</button>
+    <button id="betaMpProfileBtn" class="text-xs text-white/40 hover:text-white/70 underline ml-3">View my profile</button>
+  </div>
+
+  <div id="betaMpProfileModal" class="hidden fixed inset-0 bg-black/80 backdrop-blur z-50 flex items-center justify-center p-4">
+    <div class="bg-slate-800 border-2 border-emerald-400 p-6 rounded-2xl shadow-2xl max-w-2xl w-full max-h-[85vh] overflow-y-auto">
+      <div class="flex items-start justify-between mb-3">
+        <h3 class="text-2xl font-extrabold">Your profile</h3>
+        <button id="betaMpProfileCloseBtn" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded-lg text-sm">Close</button>
+      </div>
+      <div id="betaMpProfileContent" class="text-sm text-emerald-100"></div>
     </div>
   </div>
 
@@ -708,10 +726,12 @@
       <div id="betaMpStatus" class="text-emerald-200"></div>
       <button id="betaMpLeaveBtn2" class="bg-rose-600 hover:bg-rose-500 px-3 py-1 rounded text-xs transition" onclick="document.getElementById('betaMpLeaveBtn').click()">Leave</button>
     </div>
+    <div id="betaMpSpectator" class="hidden bg-amber-900/30 border border-amber-400/40 p-3 rounded-lg mb-2 text-sm"></div>
     <div id="betaMpJokerRow" class="flex flex-wrap items-center gap-2 bg-black/30 px-3 py-1.5 rounded-lg mb-2 text-xs">
       <span class="text-purple-300 font-bold mr-1">Jokers:</span>
       <span id="betaMpJokerCapBadge" class="text-[10px] uppercase tracking-widest text-purple-200/70 mr-1">0 / 5</span>
       <span id="betaMpSurveyor" class="hidden ml-2 px-2 py-1 rounded bg-cyan-900/40 text-cyan-200"></span>
+      <span id="betaMpCardCounter" class="hidden ml-2 px-2 py-1 rounded bg-slate-900/60 text-slate-200 text-xs"></span>
       <button id="betaMpTattletaleBtn" class="hidden ml-2 px-3 py-1 rounded bg-purple-700 hover:bg-purple-600 transition font-bold disabled:opacity-40 disabled:cursor-not-allowed">&#128064; Tattletale (0)</button>
       <button id="betaMpLoadedDieBtn" class="hidden ml-2 px-3 py-1 rounded bg-pink-700 hover:bg-pink-600 transition font-bold disabled:opacity-40 disabled:cursor-not-allowed">Loaded Die</button>
       <button id="betaMpDoubletalkBtn" class="hidden ml-2 px-3 py-1 rounded bg-indigo-700 hover:bg-indigo-600 transition font-bold disabled:opacity-40 disabled:cursor-not-allowed" title="Once per round: arm your next play to allow 2-4 cards instead of 1-3.">&#128172; Doubletalk</button>

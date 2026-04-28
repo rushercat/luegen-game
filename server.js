@@ -191,6 +191,61 @@ app.post('/api/beta/run-history', async (req, res) => {
   res.json({ history: next });
 });
 
+// 5.8 — Ascensions. Returns { wins: { jokerId: count }, tiers: { jokerId: 0..4 } }
+app.get('/api/beta/joker-wins', async (req, res) => {
+  const user = await auth.getUserByToken(bearerToken(req));
+  if (!user) return res.status(401).json({ error: 'Not signed in.' });
+  const wins = await auth.getBetaJokerWins(user.id);
+  const tiers = {};
+  for (const id of Object.keys(wins || {})) {
+    tiers[id] = auth.jokerAscensionTierFromWins(wins[id]);
+  }
+  res.json({ wins: wins || {}, tiers });
+});
+
+// 5.7 — Daily challenge. Same seed + character + modifier for everyone
+// for a given UTC date. Deterministic from the date string so anyone
+// hitting this endpoint today gets identical parameters; tomorrow a new
+// roll. Uses a tiny FNV-1a-driven PRNG so we don't need a cron job —
+// computing the daily on demand is cheap and stateless.
+app.get('/api/beta/daily', (req, res) => {
+  const now = new Date();
+  const utcDate = now.getUTCFullYear() + '-' +
+                  String(now.getUTCMonth() + 1).padStart(2, '0') + '-' +
+                  String(now.getUTCDate()).padStart(2, '0');
+  // FNV-1a → seeded RNG (mirrors floorRng/_seedToInt in server-beta-rooms.js)
+  let h = 2166136261 >>> 0;
+  const key = 'lugen-daily:' + utcDate;
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  let a = h || 1;
+  function rng() {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+  // Seed string in the same alphabet the regular seed uses.
+  const ALPHA = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let seed = '';
+  for (let i = 0; i < 8; i++) {
+    if (i === 4) seed += '-';
+    seed += ALPHA[Math.floor(rng() * ALPHA.length)];
+  }
+  const characters = ['ace', 'trickster', 'hoarder', 'banker', 'bait', 'gambler', 'sharp', 'whisper', 'randomExe'];
+  const modifiers  = ['foggy', 'greedy', 'brittle', 'echoing', 'silent', 'tariff'];
+  res.json({
+    date: utcDate,
+    seed,
+    characterId: characters[Math.floor(rng() * characters.length)],
+    floor1Modifier: modifiers[Math.floor(rng() * modifiers.length)],
+    rotatesAtUtc: utcDate + 'T24:00:00Z',
+  });
+});
+
 app.post('/api/oauth-link', oauthLimiter, async (req, res) => {
   try {
     const { supabase_token, username } = req.body || {};
@@ -1250,6 +1305,21 @@ io.on('connection', async (socket) => {
 
   function emitBetaError(message) { socket.emit('beta:error', { message }); }
 
+  // 5.8 — Hydrate the player object with their joker-ascension tiers from
+  // the auth backend. Best-effort: if lookup fails or auth disabled, the
+  // player just plays at tier 0 across the board.
+  async function _attachAscensions(player, user) {
+    if (!user || !user.id || !player) return;
+    try {
+      const wins = await auth.getBetaJokerWins(user.id);
+      const tiers = {};
+      for (const id of Object.keys(wins || {})) {
+        tiers[id] = auth.jokerAscensionTierFromWins(wins[id]);
+      }
+      player.jokerAscensionTiers = tiers;
+    } catch (_) { /* swallow */ }
+  }
+
   socket.on('beta:createRoom', ({ name } = {}) => {
     let id;
     do { id = betaMP.makeRoomId(); } while (betaMP.betaRooms[id]);
@@ -1260,6 +1330,7 @@ io.on('connection', async (socket) => {
     if (r.error) return emitBetaError(r.error);
     currentBetaRoomId = id;
     socket.emit('beta:joined', { roomId: id, playerId: r.player.id });
+    _attachAscensions(r.player, socketUser).then(() => betaMP.broadcast(io, room));
     betaMP.broadcast(io, room);
   });
 
@@ -1271,6 +1342,7 @@ io.on('connection', async (socket) => {
     if (r.error) return emitBetaError(r.error);
     currentBetaRoomId = id;
     socket.emit('beta:joined', { roomId: id, playerId: r.player.id });
+    _attachAscensions(r.player, socketUser).then(() => betaMP.broadcast(io, room));
     betaMP.broadcast(io, room);
   });
 
@@ -1522,6 +1594,17 @@ io.on('connection', async (socket) => {
     const player = betaMP.findPlayerBySocket(room, socket.id);
     if (!player) return emitBetaError('Not in a beta room.');
     const r = betaMP.useScreamer(room, player.id, rank);
+    if (r.error) return emitBetaError(r.error);
+    betaMP.broadcast(io, room);
+  });
+
+  // 5.3 — Replay seed. Host-only, lobby-only.
+  socket.on('beta:setSeed', ({ seed } = {}) => {
+    const room = betaMP.betaRooms[currentBetaRoomId];
+    if (!room) return emitBetaError('Not in a beta room.');
+    const player = betaMP.findPlayerBySocket(room, socket.id);
+    if (!player) return emitBetaError('Not in a beta room.');
+    const r = betaMP.setRoomSeed(room, player.id, seed);
     if (r.error) return emitBetaError(r.error);
     betaMP.broadcast(io, room);
   });

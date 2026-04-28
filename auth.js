@@ -508,7 +508,46 @@ async function recordBetaRun(userId, run) {
   const next = [sanitized, ...cur].slice(0, RUN_HISTORY_CAP);
   const { error } = await supabase.from('users').update({ beta_run_history: next }).eq('id', userId);
   if (error) return cur;
+  // 5.8 — bump per-joker win counts when the run was won and the client
+  // sent us the equipped-joker list. Validation: trim to 16 chars per id,
+  // dedupe, max 10 ids (5 slots × 2 = generous cap).
+  if (sanitized.result === 'won' && Array.isArray(run.jokersAtEnd)) {
+    const ids = Array.from(new Set(run.jokersAtEnd
+      .filter(x => typeof x === 'string')
+      .map(x => x.slice(0, 32)))).slice(0, 10);
+    if (ids.length > 0) await _bumpBetaJokerWins(userId, ids);
+  }
   return next;
+}
+
+async function _bumpBetaJokerWins(userId, jokerIds) {
+  try {
+    const { data, error } = await supabase.from('users').select('beta_joker_wins').eq('id', userId).single();
+    if (error || !data) return;
+    const cur = (data.beta_joker_wins && typeof data.beta_joker_wins === 'object') ? data.beta_joker_wins : {};
+    for (const id of jokerIds) cur[id] = (cur[id] || 0) + 1;
+    await supabase.from('users').update({ beta_joker_wins: cur }).eq('id', userId);
+  } catch (_) { /* swallow — best-effort tracking */ }
+}
+
+async function getBetaJokerWins(userId) {
+  if (!enabled || !userId) return {};
+  try {
+    const { data, error } = await supabase.from('users').select('beta_joker_wins').eq('id', userId).single();
+    if (error || !data) return {};
+    return (data.beta_joker_wins && typeof data.beta_joker_wins === 'object') ? data.beta_joker_wins : {};
+  } catch (_) { return {}; }
+}
+
+// 5.8 — Ascension tiers from win counts.
+// 1 win → Ascend 1, 3 wins → Ascend 2, 6 wins → Ascend 3, 10+ → Ascend 4 ("Mythic+").
+function jokerAscensionTierFromWins(wins) {
+  const n = wins | 0;
+  if (n >= 10) return 4;
+  if (n >= 6) return 3;
+  if (n >= 3) return 2;
+  if (n >= 1) return 1;
+  return 0;
 }
 
 module.exports = {
@@ -537,6 +576,8 @@ module.exports = {
   grantAchievement,
   getBetaRunHistory,
   recordBetaRun,
+  getBetaJokerWins,
+  jokerAscensionTierFromWins,
   changeUsername,
   isProhibitedUsername
 };
