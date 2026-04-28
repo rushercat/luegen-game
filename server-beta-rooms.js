@@ -479,9 +479,11 @@ function publicBetaState(room, requestingPlayerId) {
       name: p.name,
       username: p.username || null,
       characterId: p.character ? p.character.id : null,
-      characterName: p.character ? p.character.name : null,
-      hearts: p.hearts,
-      gold: p.gold,
+      characterName: p.character ? p.character.name : (p.isLugen ? 'Final Boss' : null),
+      // Hearts: Lugen has 99 internally so it can't be heart-eliminated;
+      // display "∞" client-side instead of leaking the number.
+      hearts: p.isLugen ? null : p.hearts,
+      gold: p.isLugen ? null : p.gold,
       roundsWon: p.roundsWon,
       heartShards: p.heartShards || 0,
       handCount: p.hand ? p.hand.length : 0,
@@ -489,6 +491,7 @@ function publicBetaState(room, requestingPlayerId) {
       eliminated: !!p.eliminated,
       finishedThisRound: !!p.finishedThisRound,
       connected: !!p.connected,
+      isLugen: !!p.isLugen,
       // Spectator-only field: the actual contents of this player's hand,
       // delivered only when the requesting player is round-eliminated.
       // Otherwise [], so nothing leaks to active players.
@@ -557,8 +560,11 @@ function broadcast(io, room) {
   // Each connected player gets a personalized snapshot (different `mine` data)
   for (const p of room.players) {
     if (!p.connected || !p.socketId) continue;
+    if (p.isLugen) continue; // Lugen has no socket; skip rather than crash io.to(null)
     io.to(p.socketId).emit('beta:state', publicBetaState(room, p.id));
   }
+  // Schedule Lugen's next action if it's their turn or their challenge.
+  tickLugen(io, room);
 }
 
 function log(room, msg) {
@@ -641,6 +647,8 @@ function challengeWindowMsFor(p) {
   return ms;
 }
 function jackLimitFor(p) {
+  // Lugen's design-doc passive: Jack limit 6.
+  if (p && p.isLugen) return 6;
   let limit = 4;
   if (p.character && p.character.handSizeBonus) limit += 1;  // Hoarder
   if (playerHasJoker(p, 'safetyNet')) limit += 1;
@@ -1094,6 +1102,8 @@ function startRound(room) {
   const hands = room.players.map(() => []);
   // Hoarder gets +1 hand size
   const handSizeFor = (p) => {
+    // Lugen specials: 7-card opening hand (per design doc).
+    if (p && p.isLugen) return 7;
     const bonus = (p.character && p.character.handSizeBonus) || 0;
     return HAND_SIZE + bonus;
   };
@@ -1123,6 +1133,7 @@ function startRound(room) {
   // draw pile (non-Jack only) is pulled up as replacements. If swap-eligible
   // non-Jack cards run out, the swap stops (best-effort).
   applyJackFairness(room);
+
 
   // Brittle floor modifier — every card becomes Glass for this round
   if (room.currentFloorModifier === 'brittle') {
@@ -1235,6 +1246,24 @@ function startRound(room) {
         peeks.push({ player: op.name, rank: c.rank });
       }
       if (peeks.length > 0) addPendingPeek(p, 'handMirror', peeks);
+    }
+  }
+
+  // BUG FIX — Cursed-on-deal lock. Any Cursed card sitting in a player's
+  // opening hand (Apostate reroll, Gambler's forced curse, future shop
+  // services) needs cursedTurnsLeft set BEFORE the first onTurnStart tick
+  // fires (which would burn one of the locked turns immediately). We use
+  // CURSED_TURN_LOCK + 1 so the post-tick value lines up with the
+  // mid-turn entry path (Devil's Bargain / Magnet etc., where the card
+  // arrives mid-turn and the first tick happens on the NEXT turn). Net
+  // result: every Cursed card stays locked for 2 of the owner's turns no
+  // matter how it entered the hand.
+  for (const p of room.players) {
+    if (!p.hand) continue;
+    for (const c of p.hand) {
+      if (c.affix === 'cursed' && (c.cursedTurnsLeft === undefined || c.cursedTurnsLeft <= 0)) {
+        c.cursedTurnsLeft = CURSED_TURN_LOCK + 1;
+      }
     }
   }
 
@@ -1774,6 +1803,12 @@ function _handleLiarInner(room, playerId) {
   if (activeCount(room) <= 1) {
     return endRoundIfDone(room);
   }
+  // Lugen reseats after every LIAR call. Done AFTER all the index-
+  // sensitive logic above (turn-advance, Jack curse, round-end check)
+  // since reseating shifts indices around. The fixup helpers in
+  // _shiftIndexesForRemove/Insert keep currentTurnIdx, challengerIdx,
+  // placements, lastPlay.playerIdx, etc. consistent.
+  _reseatLugen(room);
   return { ok: true };
 }
 
@@ -2050,6 +2085,11 @@ function maybeAdvanceFromFork(room) {
   // Expand joker slots for the new act
   for (const p of room.players) ensureJokerSlots(p, room.currentFloor);
   log(room, `Advancing to Floor ${room.currentFloor}.`);
+  // Floor 9 boss: spawn Lugen as a real seat. (Solo Lugen has its own
+  // floor-9 brain in beta.js; PvP needed an actual table presence.)
+  if (room.currentBoss && room.currentBoss.id === 'lugen') {
+    _spawnLugen(room);
+  }
   // 5.6 — Last Stand: the FIRST time per run a player enters a floor at
   // exactly 1 Heart (and isn't eliminated), they get a free Smoke Bomb
   // OR +50g (50/50). The flag lives on the player so it can never fire
@@ -2407,14 +2447,23 @@ function cancelService(room, playerId) {
 }
 
 function endRun(room, winnerId) {
+  // Lugen never claims a run win — if Lugen happens to be the last one
+  // standing (every human eliminated), credit the last-finishing human
+  // as the loser and report the run as a defeat (winnerId = null).
+  if (winnerId) {
+    const w = room.players.find(p => p.id === winnerId);
+    if (w && w.isLugen) winnerId = null;
+  }
   room.runOver = true;
   room.runWinnerId = winnerId;
   if (winnerId) {
     const w = room.players.find(p => p.id === winnerId);
     log(room, `Run over — ${w ? w.name : 'someone'} wins!`);
   } else {
-    log(room, 'Run over — everyone is eliminated.');
+    log(room, 'Run over — everyone is eliminated (Lugen prevails).');
   }
+  // Despawn Lugen so a post-run lobby state doesn't show its seat.
+  _despawnLugen(room);
   // Progression report happens client-side (server fires a 'beta:runEnded' event
   // and clients POST to /api/beta/run-history etc.)
 }
@@ -2895,6 +2944,231 @@ function useSleightOfHand(room, playerId) {
   room.sleightUsedRound[playerId] = true;
   log(room, `${p.name} - Sleight of Hand: drew 1 card from the draw pile.`);
   return { ok: true };
+}
+
+// ============================================================
+// Lugen — server-driven AI seat (PvP only). Joins the table on floor 9
+// (the boss floor), takes turns automatically, and reseats randomly
+// after every LIAR resolution so they don't always sit between the
+// same two humans. Per design: 7-card opening hand, Jack limit 6,
+// every play is randomly affixed.
+// ============================================================
+
+const LUGEN_AFFIX_POOL = ['gilded','glass','spiked','cursed','steel','mirage','hollow','echo'];
+const LUGEN_PLAY_DELAY_MS    = 1500; // before Lugen plays
+const LUGEN_CHALLENGE_DELAY_MS = 1100; // before Lugen calls/passes
+const LUGEN_BLUFF_RATE       = 0.55; // mirrors solo
+const LUGEN_CHALLENGE_RATE   = 0.45;
+
+function _isLugen(p) { return !!(p && p.isLugen); }
+
+function lugenSeated(room) {
+  return room.players.findIndex(p => _isLugen(p));
+}
+
+function _spawnLugen(room) {
+  if (lugenSeated(room) !== -1) return; // already seated
+  const lugen = {
+    id: 'lugen_' + newId(),
+    socketId: null,
+    userId: null,
+    username: null,
+    name: 'Lugen',
+    character: null,        // Lugen has no character; passive lives in helpers
+    isLugen: true,
+    runDeck: [],            // Lugen doesn't get a run deck (rounds deal vanilla into its hand)
+    hand: [],
+    hearts: 99,             // effectively can't be heart-eliminated; round-elim still applies
+    gold: 0,
+    roundsWon: 0,
+    heartShards: 0,
+    eliminated: false,
+    finishedThisRound: false,
+    connected: true,        // pretend connected so broadcast doesn't try to send to it
+    removalTimer: null,
+    jokers: [null, null, null, null, null],
+    inventory: {},
+    relics: [],
+    pendingPeeks: [],
+  };
+  // Random insertion position. Uses splice so all existing index-based
+  // state must be patched; that's what _shiftIndexesForInsert handles.
+  const insertAt = Math.floor(Math.random() * (room.players.length + 1));
+  _shiftIndexesForInsert(room, insertAt);
+  room.players.splice(insertAt, 0, lugen);
+  log(room, `Lugen takes a seat (position ${insertAt + 1}).`);
+}
+
+function _despawnLugen(room) {
+  const i = lugenSeated(room);
+  if (i === -1) return;
+  room.players.splice(i, 1);
+  _shiftIndexesForRemove(room, i);
+  log(room, 'Lugen leaves the table.');
+}
+
+// Reseat: remove from current position, insert at a different random one.
+// Called after LIAR resolutions so Lugen rotates around the table.
+//
+// Subtle: when Lugen is the CURRENTLY-INDEXED seat (currentTurnIdx /
+// challengerIdx / etc., e.g. after a caught-lying pile-pickup landed on
+// Lugen), the bare _shiftIndexesForRemove logic stays at the same idx,
+// which would point to whoever slid into Lugen's old slot. So we
+// remember which roles Lugen owned before the splice and re-point them
+// to Lugen's new seat after.
+function _reseatLugen(room) {
+  const cur = lugenSeated(room);
+  if (cur === -1) return;
+  if (room.players.length <= 2) return; // pointless if only Lugen + 1 human
+
+  const wasCurrentTurn = room.currentTurnIdx === cur;
+  const wasChallenger  = room.challengerIdx === cur;
+  const wasNextLeader  = room.nextRoundLeaderIdx === cur;
+  const wasEcho        = room.echoArmedFor === cur;
+  const wasLastPlayer  = room.lastPlay && room.lastPlay.playerIdx === cur;
+
+  const lugen = room.players[cur];
+  room.players.splice(cur, 1);
+  _shiftIndexesForRemove(room, cur);
+  // Pick a NEW position different from the original (modulo array shrink).
+  let newAt;
+  do {
+    newAt = Math.floor(Math.random() * (room.players.length + 1));
+  } while (newAt === cur && room.players.length > 1);
+  _shiftIndexesForInsert(room, newAt);
+  room.players.splice(newAt, 0, lugen);
+
+  // Restore Lugen's role-pointers to its new index.
+  if (wasCurrentTurn) room.currentTurnIdx = newAt;
+  if (wasChallenger)  room.challengerIdx  = newAt;
+  if (wasNextLeader)  room.nextRoundLeaderIdx = newAt;
+  if (wasEcho)        room.echoArmedFor   = newAt;
+  if (wasLastPlayer && room.lastPlay) room.lastPlay.playerIdx = newAt;
+  log(room, `Lugen reseats (now position ${newAt + 1}).`);
+}
+
+// When a player is REMOVED at index i, every index >= i in room state
+// references shifts down by 1. Mirrors removePlayer's fixup.
+function _shiftIndexesForRemove(room, idx) {
+  if (room.currentTurnIdx > idx) room.currentTurnIdx -= 1;
+  if (room.challengerIdx > idx)  room.challengerIdx -= 1;
+  if (typeof room.echoArmedFor === 'number' && room.echoArmedFor > idx) room.echoArmedFor -= 1;
+  if (typeof room.nextRoundLeaderIdx === 'number' && room.nextRoundLeaderIdx > idx) room.nextRoundLeaderIdx -= 1;
+  if (room.lastPlay && room.lastPlay.playerIdx > idx) room.lastPlay.playerIdx -= 1;
+  if (Array.isArray(room.placements)) {
+    room.placements = room.placements
+      .filter(p => p !== idx)
+      .map(p => (p > idx ? p - 1 : p));
+  }
+}
+// Inverse: every index >= idx shifts UP by 1 (because a new seat slid in).
+function _shiftIndexesForInsert(room, idx) {
+  if (room.currentTurnIdx >= idx) room.currentTurnIdx += 1;
+  if (room.challengerIdx >= idx)  room.challengerIdx += 1;
+  if (typeof room.echoArmedFor === 'number' && room.echoArmedFor >= idx) room.echoArmedFor += 1;
+  if (typeof room.nextRoundLeaderIdx === 'number' && room.nextRoundLeaderIdx >= idx) room.nextRoundLeaderIdx += 1;
+  if (room.lastPlay && room.lastPlay.playerIdx >= idx) room.lastPlay.playerIdx += 1;
+  if (Array.isArray(room.placements)) {
+    room.placements = room.placements.map(p => (p >= idx ? p + 1 : p));
+  }
+}
+
+// Lugen's turn — picks 1-3 cards. Mostly bluffs; occasionally truthful
+// when matching cards exist. Affixes every played card with a random
+// pool entry (per design) before submitting via handlePlay.
+function _lugenPlay(room) {
+  const idx = lugenSeated(room);
+  if (idx === -1) return;
+  if (idx !== room.currentTurnIdx) return;
+  if (room.challengeOpen) return;
+  const lugen = room.players[idx];
+  if (lugen.eliminated || lugen.finishedThisRound) return;
+  if (!lugen.hand || lugen.hand.length === 0) return;
+  // Filter out Cursed-locked cards — handlePlay rejects them and we'd
+  // ping-pong forever. If everything in hand is Cursed-locked, Lugen
+  // forfeits the turn (handed off to the next player via Smoke-Bomb-
+  // equivalent: just advance the turn).
+  const playable = lugen.hand.filter(c =>
+    !(c.affix === 'cursed' && (c.cursedTurnsLeft || 0) > 0));
+  if (playable.length === 0) {
+    log(room, 'Lugen — every hand card is Cursed-locked. Skipping turn.');
+    room.currentTurnIdx = findNextActiveIdx(room, idx);
+    return;
+  }
+  const target = room.targetRank;
+  const matching = playable.filter(c => c.rank === target);
+  const willBluff = matching.length === 0 || Math.random() < LUGEN_BLUFF_RATE;
+  const maxCount = Math.min(3, playable.length);
+  const count = 1 + Math.floor(Math.random() * maxCount);
+  let pick;
+  if (willBluff) pick = shuffle(playable).slice(0, count);
+  else            pick = matching.slice(0, count);
+  // Lugen specials: every played card is randomly affixed. We mutate
+  // the hand card directly so handlePlay sees the new affix when moving
+  // it to the pile. Owner is preserved (some are owner=-1 round-deck
+  // cards, others are stolen-from-pickup with owner set).
+  for (const c of pick) {
+    c.affix = LUGEN_AFFIX_POOL[Math.floor(Math.random() * LUGEN_AFFIX_POOL.length)];
+  }
+  log(room, `Lugen prepares ${count} card${count === 1 ? '' : 's'} (random affixes).`);
+  handlePlay(room, lugen.id, pick.map(c => c.id));
+}
+
+// Lugen's challenge decision when it's the open-challenge challenger.
+function _lugenDecideChallenge(room) {
+  const idx = lugenSeated(room);
+  if (idx === -1) return;
+  if (!room.challengeOpen) return;
+  if (room.challengerIdx !== idx) return;
+  const willCall = Math.random() < LUGEN_CHALLENGE_RATE;
+  const lugen = room.players[idx];
+  if (willCall) {
+    log(room, `Lugen calls LIAR.`);
+    handleLiar(room, lugen.id);
+  } else {
+    log(room, `Lugen passes.`);
+    handlePass(room, lugen.id);
+  }
+}
+
+// Scheduler — called from broadcast(). If Lugen is the active turn or
+// the open challenger, fire the action after a short delay so clients
+// see the state first. Re-entrant: chains to itself when the action
+// resolves into another Lugen turn (e.g. Lugen plays, next challenger
+// is also Lugen — unlikely but possible).
+function tickLugen(io, room) {
+  if (!room || room.runOver) return;
+  if (room.phase !== 'round') return;
+  const idx = lugenSeated(room);
+  if (idx === -1) return;
+  const lugen = room.players[idx];
+  if (lugen.eliminated || lugen.finishedThisRound) return;
+
+  // Avoid stacking timers — only one pending Lugen action at a time.
+  if (room._lugenActionPending) return;
+
+  if (room.challengeOpen && room.challengerIdx === idx) {
+    room._lugenActionPending = true;
+    setTimeout(() => {
+      room._lugenActionPending = false;
+      if (!betaRooms[room.id]) return;
+      if (!room.challengeOpen) return;
+      _lugenDecideChallenge(room);
+      if (io) broadcast(io, room);
+    }, LUGEN_CHALLENGE_DELAY_MS);
+    return;
+  }
+  if (!room.challengeOpen && room.currentTurnIdx === idx) {
+    room._lugenActionPending = true;
+    setTimeout(() => {
+      room._lugenActionPending = false;
+      if (!betaRooms[room.id]) return;
+      if (room.challengeOpen) return;
+      if (room.runOver) return;
+      _lugenPlay(room);
+      if (io) broadcast(io, room);
+    }, LUGEN_PLAY_DELAY_MS);
+  }
 }
 
 // 5.11 — Forfeit: a player may concede the run mid-floor. They drop to

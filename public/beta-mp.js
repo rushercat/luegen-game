@@ -1284,6 +1284,7 @@
       let cls = 'bg-black/40 px-3 py-2 rounded text-sm flex flex-col items-center min-w-[140px]';
       if (isTurn) cls += ' ring-2 ring-yellow-400';
       if (isChallenger) cls += ' ring-2 ring-rose-400';
+      if (p.isLugen) cls += ' bg-purple-950/60 border border-purple-500';
       if (p.eliminated) cls += ' opacity-50';
       card.className = cls;
       // Screamer reveal: render the count of matching cards (or "—" if none)
@@ -1295,12 +1296,18 @@
         ? '<div class="text-xs text-rose-300 mt-1">📢 ' + escapeHtml(screamRank) +
             ' &times; ' + revealedCount + (revealedCount === 0 ? ' (none)' : '') + '</div>'
         : '';
+      const heartsCell = p.isLugen
+        ? '<span class="text-purple-300 font-bold">♥∞</span>'
+        : '<span class="text-red-400">♥' + p.hearts + '</span>';
+      const goldCell = p.isLugen
+        ? '<span class="text-purple-300">—</span>'
+        : '<span class="text-yellow-300">' + p.gold + 'g</span>';
       card.innerHTML =
-        '<div class="font-bold">' + escapeHtml(p.name) + (isMe ? ' (you)' : '') + '</div>' +
-        '<div class="text-xs text-emerald-200">' + escapeHtml(p.characterName || '?') + '</div>' +
+        '<div class="font-bold">' + escapeHtml(p.name) + (isMe ? ' (you)' : '') + (p.isLugen ? ' &#128520;' : '') + '</div>' +
+        '<div class="text-xs ' + (p.isLugen ? 'text-purple-200' : 'text-emerald-200') + '">' + escapeHtml(p.characterName || '?') + '</div>' +
         '<div class="text-xs mt-1">' +
-          '<span class="text-red-400">♥' + p.hearts + '</span> · ' +
-          '<span class="text-yellow-300">' + p.gold + 'g</span> · ' +
+          heartsCell + ' · ' +
+          goldCell + ' · ' +
           '<span class="text-cyan-300">' + p.handCount + ' cards</span>' +
         '</div>' +
         '<div class="text-xs text-white/60">Round wins: ' + p.roundsWon + '</div>' +
