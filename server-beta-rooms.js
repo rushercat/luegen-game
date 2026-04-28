@@ -60,6 +60,7 @@ const JOKER_CATALOG = {
   blackHole:      { id: 'blackHole',      name: 'Black Hole',       rarity: 'Legendary', price: 400, desc: 'On a successful Jack bluff (no challenge), delete one non-Jack from your hand.' },
   coldRead:       { id: 'coldRead',       name: 'Cold Read',        rarity: 'Legendary', price: 400, desc: 'Round start: see one random card from each opponent.' },
   vengefulSpirit: { id: 'vengefulSpirit', name: 'Vengeful Spirit',  rarity: 'Legendary', price: 400, desc: 'If a Jack curse eliminates you, the next active player is also eliminated.' },
+  callersMark:    { id: 'callersMark',    name: "Caller's Mark",    rarity: 'Uncommon',  price: 150, desc: "First LIAR call each round: +20g if right, -15g if wrong. Rewards reads, punishes spam." },
 };
 
 // Relic catalog — permanent passive bonuses, one of each per run.
@@ -734,6 +735,7 @@ function startRound(room) {
   room.sleightUsedRound = {};
   room.doubletalkArmed = {};
   room.doubletalkUsedRound = {};
+  room.callersMarkFiredRound = {};   // Caller's Mark joker: first LIAR call only
   if (room.challengeTimer) { clearTimeout(room.challengeTimer); room.challengeTimer = null; }
 
   // The Apostate: reroll every run-deck card's affix to a fresh random one.
@@ -1216,6 +1218,26 @@ function _handleLiarInner(room, playerId) {
   const liarIdx = room.lastPlay.playerIdx;
   const liarP = room.players[liarIdx];
   const challengerP = p;
+
+  // Caller's Mark joker: the challenger's first LIAR call this round pays
+  // out (+20g if right, -15g if wrong). Subsequent calls don't trigger.
+  // Per-player flag lives on room.callersMarkFiredRound (reset in startRound).
+  if (playerHasJoker(challengerP, 'callersMark') &&
+      !(room.callersMarkFiredRound && room.callersMarkFiredRound[playerId])) {
+    room.callersMarkFiredRound = room.callersMarkFiredRound || {};
+    room.callersMarkFiredRound[playerId] = true;
+    if (wasLie) {
+      // Right call → +20g (run through applyGoldGain so Ledger / Greedy
+      // / character multipliers stack correctly).
+      const got = applyGoldGain(challengerP, 20, 'callersMark');
+      log(room, `${challengerP.name} - Caller's Mark: clean read. +${got}g.`);
+    } else {
+      // Wrong call → -15g, clamped at 0 so we never push gold negative.
+      const lost = Math.min(15, challengerP.gold || 0);
+      challengerP.gold = (challengerP.gold || 0) - lost;
+      log(room, `${challengerP.name} - Caller's Mark: wrong call. -${lost}g.`);
+    }
+  }
 
   // Mirage: any Mirage card revealed is consumed — remove from the liarP run deck
   for (const c of playedCards) {

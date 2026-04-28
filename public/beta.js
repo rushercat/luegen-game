@@ -478,6 +478,18 @@
     patron:        { id: 'patron',        name: 'The Patron',     rarity: 'Legendary', price: 400, desc: "+1g per Gilded card in your hand on every turn (stacks with Gilded's base +2g)." },
     hometownHero:  { id: 'hometownHero',  name: 'Hometown Hero',   rarity: 'Uncommon',  price: 150, desc: 'Each round: at least 50% of your starting hand is drawn from your own run deck (vs. 30% baseline).' },
     alchemist:     { id: 'alchemist',     name: 'The Alchemist',   rarity: 'Rare',      price: 250, desc: 'Once per round: transform a hand card (even Steel) into a different card with a random positive affix (Gilded / Mirage / Echo / Hollow).' },
+    callersMark:   { id: 'callersMark',   name: "Caller's Mark",   rarity: 'Uncommon',  price: 150, desc: 'The first time each round you call LIAR, you gain 20g if right or lose 15g if wrong. Rewards reads, punishes spam.' },
+    // Sixth Sense — stackable Uncommon. After every opponent's play, rolls
+    // a 15% × stack chance to silently reveal whether the play was a bluff.
+    // Buying again while equipped bumps the stack (max 3 = up to 45%/play).
+    // The reveal is private — opponents don't know you peeked.
+    sixthSense:    { id: 'sixthSense',    name: 'Sixth Sense',     rarity: 'Uncommon',  price: 150, stackable: true, maxStack: 3, desc: 'After each opponent play: 15% chance per stack to privately learn if it was a bluff. Stacks up to 3 (max 45% per play). Rebuy to stack.' },
+    // The Screamer — once per floor, name a rank. For the rest of that
+    // round, every card of that rank in any hand is publicly revealed in
+    // the opponents panel (face-up beneath the hand-size number). Loud,
+    // asymmetric. Activate via window.lugenUseScreamer('K') (or whichever
+    // rank). UI button is a follow-up; the gameplay is wired.
+    screamer:      { id: 'screamer',      name: 'The Screamer',    rarity: 'Legendary', price: 400, desc: "Once per floor: name a rank. For the rest of that round, every card of that rank in any hand is publicly revealed. Activate via lugenUseScreamer('K')." },
   };
   const SLOW_HAND_WINDOW_MS = 10000;
   const SPIKED_TRAP_DRAWS = 3;
@@ -535,6 +547,13 @@
     { id: 'jokersMask',     name: "The Joker's Mask",price: 75,  desc: 'One-shot: tag a non-Jack so it counts as a Jack for the curse (use with Safety Net / Vengeful Spirit).', enabled: true },
     { id: 'mirrorShard',    name: 'Mirror Shard',    price: 45,  desc: 'Arm: the next Liar call against you reveals only the result, not the cards.', enabled: true },
     { id: 'stackedHand',    name: 'Stacked Hand',    price: 100, desc: 'Arm: next round, +20% extra of your starting hand is pulled from your run deck. Stacks with Hometown Hero.', enabled: true },
+    // Crooked Die — the Loaded Die relic effect, but as a consumable.
+    // Floor-locked so you can't stockpile rerolls; per design.
+    { id: 'crookedDie',     name: 'Crooked Die',     price: 50,  desc: 'Re-roll the Target Rank for this round only. Floor-locked (one purchase per floor).', enabled: true, floorLocked: true },
+    // Lie Detector — armable. Once armed, the next time you can call LIAR
+    // a "peek" button appears; clicking it shows truth/lie privately, then
+    // you decide whether to actually call.
+    { id: 'lieDetector',    name: 'Lie Detector',    price: 60,  desc: 'Arm: the next time you can call LIAR, peek the truth privately before deciding.', enabled: true },
     {
       id: 'glassShard',
       name: 'Glass Shard',
@@ -594,6 +613,9 @@
     { id: 'patron',       name: 'JOKER · The Patron',     price: 400, desc: '[Legendary] +1g per Gilded card in hand each turn (stacks with Gilded base).',                                  enabled: true, type: 'joker' },
     { id: 'hometownHero', name: 'JOKER · Hometown Hero',  price: 150, desc: '[Uncommon] Starting hand draws at least 50% from your own run deck (vs 30% base).',                                  enabled: true, type: 'joker' },
     { id: 'alchemist',    name: 'JOKER · The Alchemist',   price: 250, desc: '[Rare] Once per round: transform a hand card (any, even Steel) into a different card with a random positive affix.', enabled: true, type: 'joker' },
+    { id: 'callersMark',  name: "JOKER · Caller's Mark",   price: 150, desc: "[Uncommon] First LIAR call each round: +20g if right, -15g if wrong.",                                                  enabled: true, type: 'joker' },
+    { id: 'sixthSense',   name: 'JOKER · Sixth Sense',     price: 150, desc: '[Uncommon · stacks ×3] After each opponent play: 15%/stack chance to privately learn truth/lie.',                          enabled: true, type: 'joker' },
+    { id: 'screamer',     name: 'JOKER · The Screamer',    price: 400, desc: '[Legendary] Once per floor: name a rank, every card of that rank in any hand is publicly revealed for the rest of the round.', enabled: true, type: 'joker' },
   ];
 
   // Phase 3: random events at the Event fork node.
@@ -912,6 +934,11 @@
       inventory: { smokeBomb: 0, counterfeit: 0, jackBeNimble: 0 },
       runDeck: buildInitialRunDeck(0),
       jokers: [null, null],
+      // Stack counts for stackable jokers, keyed by jokerId. Default stack
+      // when a stackable joker is first equipped is 1. Buying again while
+      // already equipped bumps the count instead of consuming a 2nd slot,
+      // up to the joker's maxStack.
+      jokerStacks: {},
       tattletaleChargesThisFloor: 0,
       character: character,
       eavesdropperLastFiredRound: -99,
@@ -1228,6 +1255,9 @@
       emptyThreatPending: false, // Empty Threat: next bot bluffs cautiously once
       magicianUsedThisRound: false, // Magician character: per-round transform
       alchemistUsedThisRound: false, // Alchemist joker: per-round transform
+      callersMarkFiredThisRound: false, // Caller's Mark joker: first LIAR call only
+      screamerRevealedRank: null,   // The Screamer: while set, every card of this rank is publicly revealed
+      lieDetectorArmed: false,      // Lie Detector consumable: arm flag
       stackedHandActive: !!(runState && runState.stackedHandPending), // Stacked Hand: own-deck +20% this round
       // Achievement: Liar's Tongue tracks human lies per round.
       humanLiesThisRound: 0,
@@ -1524,6 +1554,8 @@
     ensureSoloJokerSlots(runState.currentFloor);
     runState.roundsWon = new Array(NUM_PLAYERS).fill(0);
     runState.loadedDieUsedThisFloor = false;  // Phase 7+: reset Loaded Die per floor
+    runState.crookedDieUsedThisFloor = false; // Crooked Die consumable per-floor cap
+    runState.screamerUsedThisFloor = false;   // The Screamer joker per-floor cap
     runState.floorLockedBoughtThisFloor = {};  // Reset floor-locked shop items
     runState.lastWordUsedThisFloor = false;    // Last Word joker
     runState.saboteurUsedThisFloor = false;    // Saboteur joker
@@ -2090,6 +2122,31 @@
         (cards.length === 1 ? ' card' : ' cards') +
         ' as ' + state.targetRank + '.');
 
+    // Sixth Sense (HUMAN only, fires on every OPPONENT play): 15% per stack
+    // chance to silently learn whether the play was a bluff. Stacks up to
+    // 3 → up to 45% per play. Reveal is private (privatePeek toast); the
+    // opponent doesn't know we peeked. Trickster-marked +/-1 cards still
+    // count as truth here — we mirror the same logic the LIAR resolver uses
+    // so a Trickster bluff doesn't get falsely flagged.
+    if (playerIdx !== 0 && hasJoker('sixthSense')) {
+      const stacks = jokerStack('sixthSense');
+      const chance = 0.15 * stacks;
+      if (Math.random() < chance) {
+        const _RANK_ORDER_SS = ['J', '10', 'Q', 'K', 'A'];
+        const _isTricksterMatch = (card, claim) => {
+          if (!state.tricksterMarkedId || card.id !== state.tricksterMarkedId) return false;
+          const ci = _RANK_ORDER_SS.indexOf(card.rank);
+          const ti = _RANK_ORDER_SS.indexOf(claim);
+          if (ci < 0 || ti < 0) return false;
+          return Math.abs(ci - ti) === 1;
+        };
+        const isBluff = !cards.every(c =>
+          c.rank === state.targetRank || c.affix === 'mirage' || _isTricksterMatch(c, state.targetRank));
+        privatePeek('Sixth Sense (' + Math.round(chance * 100) + '%): ' +
+          playerLabel(playerIdx) + "'s play was " + (isBluff ? 'a BLUFF' : 'truth') + '.');
+      }
+    }
+
     // Phase 8+: Echoing modifier — 20% chance to flash first card to all
     if (runState && runState.currentFloorModifier === 'echoing' && cards.length > 0 && Math.random() < 0.2) {
       const c = cards[0];
@@ -2209,6 +2266,28 @@
 
     state.challengeOpen = true;
     state.challengerIdx = challenger;
+
+    // Lie Detector consumable: if the human is the challenger and they've
+    // armed it, fire the peek now so they see truth/lie BEFORE deciding
+    // whether to click LIAR. The arm is consumed regardless of what they
+    // do next (calling LIAR or passing). One use per arm.
+    if (challenger === 0 && state.lieDetectorArmed && state.lastPlay) {
+      state.lieDetectorArmed = false;
+      const _RANK_ORDER_LD = ['J', '10', 'Q', 'K', 'A'];
+      const _isTricksterMatch = (card, claim) => {
+        if (!state.tricksterMarkedId || card.id !== state.tricksterMarkedId) return false;
+        const ci = _RANK_ORDER_LD.indexOf(card.rank);
+        const ti = _RANK_ORDER_LD.indexOf(claim);
+        if (ci < 0 || ti < 0) return false;
+        return Math.abs(ci - ti) === 1;
+      };
+      const lp2 = state.lastPlay;
+      const peekedCards = state.pile.slice(-lp2.count);
+      const isBluff = !peekedCards.every(c =>
+        c.rank === lp2.claim || c.affix === 'mirage' || _isTricksterMatch(c, lp2.claim));
+      privatePeek('Lie Detector: ' + playerLabel(lp2.playerIdx) + "'s play was " +
+        (isBluff ? 'a BLUFF' : 'truth') + '. Decide whether to call LIAR.');
+    }
 
     // Phase 5: Slow Hand stretches the human's challenge window;
     // Sharp character adds +1s on top.
@@ -2550,6 +2629,27 @@
           }
         }
       };
+
+      // Caller's Mark joker (HUMAN only): the first LIAR call you make each
+      // round pays out (+20g) if you were right or stings (-15g) if you were
+      // wrong. Subsequent calls in the same round don't trigger — that's the
+      // "encourages skilled calling, not spam" part of the design.
+      // Fired here, after the reveal but before the pile is distributed, so
+      // the gold change is associated with this specific reveal in the log.
+      if (challengerIdx === 0 && hasJoker('callersMark') && !state.callersMarkFiredThisRound) {
+        state.callersMarkFiredThisRound = true;
+        if (allMatch) {
+          // Truth told → the human's call was wrong.
+          const lost = Math.min(15, runState.gold);
+          runState.gold -= lost;
+          log("Caller's Mark: wrong call. -" + lost + 'g.');
+        } else {
+          // Lie caught → the human's call was right. Gold goes through the
+          // normal pipeline (Ledger / Greedy / Gambler multipliers apply).
+          const got = addGold(20);
+          log("Caller's Mark: clean read. +" + got + 'g.');
+        }
+      }
 
       if (allMatch) {
         if (lp.playerIdx === 0 && runState && runState.ach) {
@@ -3029,6 +3129,8 @@
     jokersMask:    { name: "The Joker's Mask",desc: 'Tag a non-Jack so it counts as a Jack for the Jack curse this round.' },
     mirrorShard:   { name: 'Mirror Shard',   desc: 'Arm: the next Liar call against you shows only the result, not the cards.' },
     stackedHand:   { name: 'Stacked Hand',   desc: 'Arm: next round, your starting hand pulls +20% additional cards from your own run deck.' },
+    crookedDie:    { name: 'Crooked Die',    desc: 'Re-roll the Target Rank for this round only. Floor-locked.' },
+    lieDetector:   { name: 'Lie Detector',   desc: 'Arm: the next time you can call LIAR, peek the truth privately before deciding.' },
   };
   // Map id -> use-handler for new consumables. Old ones (smoke / counterfeit /
   // jackBeNimble) still have their own buttons in the action bar; we let those
@@ -3048,6 +3150,8 @@
     jokersMask:     () => useJokersMask(),
     mirrorShard:    () => useMirrorShard(),
     stackedHand:    () => useStackedHand(),
+    crookedDie:     () => useCrookedDie(),
+    lieDetector:    () => useLieDetector(),
   };
 
   function _consumableUsableNow(id) {
@@ -3059,6 +3163,7 @@
     if (id === 'pickpocket' && runState.pickpocketUsedThisFloor) return false;
     if (id === 'markedDeck' && runState.markedDeckUsedThisFloor) return false;
     if (id === 'emptyThreat' && runState.emptyThreatUsedThisFloor) return false;
+    if (id === 'crookedDie' && runState.crookedDieUsedThisFloor) return false;
     return true;
   }
 
@@ -3571,10 +3676,35 @@
   function hasJoker(jokerId) {
     return runState && runState.jokers && runState.jokers.some(j => j && j.id === jokerId);
   }
+  // Stack count for a joker. 0 = not equipped. 1 = base equip. Stackable
+  // jokers can go above 1 via repeat purchases (e.g. Sixth Sense → max 3).
+  // Non-stackable jokers always return 1 when equipped.
+  function jokerStack(jokerId) {
+    if (!hasJoker(jokerId)) return 0;
+    if (runState && runState.jokerStacks && runState.jokerStacks[jokerId]) {
+      return runState.jokerStacks[jokerId];
+    }
+    return 1;
+  }
   function equipJoker(jokerData) {
+    // Stackable joker already equipped → bump the stack instead of taking
+    // another slot. Caller (the shop buy flow) is responsible for checking
+    // we haven't hit maxStack before calling this.
+    if (jokerData && jokerData.stackable && hasJoker(jokerData.id)) {
+      const cur = jokerStack(jokerData.id);
+      const cap = jokerData.maxStack || 1;
+      if (cur >= cap) return false;
+      runState.jokerStacks = runState.jokerStacks || {};
+      runState.jokerStacks[jokerData.id] = cur + 1;
+      return true;
+    }
     for (let i = 0; i < runState.jokers.length; i++) {
       if (runState.jokers[i] === null) {
         runState.jokers[i] = { ...jokerData };
+        if (jokerData && jokerData.stackable) {
+          runState.jokerStacks = runState.jokerStacks || {};
+          runState.jokerStacks[jokerData.id] = 1;
+        }
         if (runState.ach) {
           runState.ach.jokersEverEquipped = (runState.ach.jokersEverEquipped || 0) + 1;
           if (runState.ach.jokersEverEquipped >= 5) _achGrant('jokersWild');
@@ -3699,12 +3829,30 @@
         }).join('');
         seerStrip = '<div class="my-1 min-h-[0.5rem]">' + dots + '</div>';
       }
+      // The Screamer: render face-up mini-cards for every card of the
+      // screamed rank in this opponent's hand. Hidden if Hollow boss is
+      // hiding hand size — that takes precedence (paranoia tier intact).
+      let screamerStrip = '';
+      if (state.screamerRevealedRank && !hollowHide) {
+        const matches = state.hands[i].filter(c => c.rank === state.screamerRevealedRank);
+        if (matches.length > 0) {
+          const minis = matches.map(c => {
+            const ring = affixRingClass(c.affix) || 'ring-2 ring-rose-400';
+            return '<div class="card card-face inline-flex items-center justify-center text-base font-bold text-black rounded ' + ring +
+              '" style="width:28px;height:38px;margin:0 1px;" title="Screamer reveal">' + escapeHtml(c.rank) + '</div>';
+          }).join('');
+          screamerStrip = '<div class="my-1">' + minis + '</div>';
+        } else {
+          screamerStrip = '<div class="text-[10px] text-rose-300 my-1 italic">no ' + escapeHtml(state.screamerRevealedRank) + 's</div>';
+        }
+      }
       const card = document.createElement('div');
       card.className = 'bg-black/40 p-3 rounded-lg text-center min-w-[120px]' + ringClass;
       card.innerHTML =
         '<div class="text-sm font-bold">' + BOT_NAMES[i - 1] + '</div>' +
         '<div class="text-2xl font-extrabold my-1">' + handSizeDisplay + '</div>' + seerStrip +
         '<div class="text-xs text-emerald-300">cards</div>' +
+        screamerStrip +
         '<div class="text-xs text-yellow-300 mt-1 min-h-[1rem]">' + status + '</div>';
       div.appendChild(card);
     }
@@ -5127,22 +5275,39 @@
       const canAfford = runState.gold >= item.price;
       // Floor-locked items per design: Forger, Jack-be-Nimble, and now
       // Counterfeit (bumped to once-per-floor when its price went 35g -> 50g).
-      const FLOOR_LOCKED_IDS = ['forger', 'jackBeNimble', 'counterfeit'];
+      const FLOOR_LOCKED_IDS = ['forger', 'jackBeNimble', 'counterfeit', 'crookedDie'];
       const floorLocked = FLOOR_LOCKED_IDS.includes(item.id) &&
                           runState.floorLockedBoughtThisFloor &&
                           runState.floorLockedBoughtThisFloor[item.id];
+      // Stackable jokers (e.g. Sixth Sense): "equipped" doesn't disable
+      // re-buying, and they don't need a fresh slot — buying again bumps
+      // the stack on the existing slot. Disabled only at maxStack.
+      const _catalogJoker = isJoker ? (JOKER_CATALOG[item.id] || null) : null;
+      const _stackable    = !!(_catalogJoker && _catalogJoker.stackable);
+      const _maxStack     = (_catalogJoker && _catalogJoker.maxStack) || 1;
+      const _curStack     = (isJoker && equipped) ? jokerStack(item.id) : 0;
+      const _stackedFull  = isJoker && _stackable && equipped && _curStack >= _maxStack;
       const disabled = !item.enabled || !canAfford ||
-                       (isJoker && (equipped || slotsFull)) ||
+                       (isJoker && !_stackable && (equipped || slotsFull)) ||
+                       (isJoker &&  _stackable && (_stackedFull || (slotsFull && !equipped))) ||
                        (isRelic && ownedRelic) ||
                        floorLocked;
       const row = document.createElement('div');
       row.className = 'bg-black/40 hover:bg-black/50 transition p-3 rounded-xl border border-white/10' +
                        (item.enabled ? '' : ' opacity-60');
       let btnLabel = item.enabled ? 'Buy' : 'Soon';
-      if (isJoker && equipped) btnLabel = 'Equipped';
-      else if (isJoker && slotsFull && !equipped) btnLabel = 'Slots full';
-      else if (isRelic && ownedRelic) btnLabel = 'Owned';
-      else if (floorLocked) btnLabel = 'Floor-locked';
+      if (isJoker && _stackable && equipped) {
+        btnLabel = _stackedFull ? ('Maxed (' + _curStack + '/' + _maxStack + ')')
+                                : ('Stack ' + _curStack + '/' + _maxStack + ' — Buy');
+      } else if (isJoker && equipped) {
+        btnLabel = 'Equipped';
+      } else if (isJoker && slotsFull && !equipped) {
+        btnLabel = 'Slots full';
+      } else if (isRelic && ownedRelic) {
+        btnLabel = 'Owned';
+      } else if (floorLocked) {
+        btnLabel = 'Floor-locked';
+      }
       const priceColor = canAfford ? 'bg-yellow-400 text-black' : 'bg-rose-500 text-white';
       row.innerHTML =
         '<div class="font-bold">' + escapeHtml(item.name) + '</div>' +
@@ -5183,13 +5348,27 @@
             log('Acquired relic: ' + item.name + '. (-' + item.price + 'g)');
             renderShop();
           } else if (item.type === 'joker') {
-            if (hasJoker(item.id)) return;
+            const data = JOKER_CATALOG[item.id];
+            if (!data) return;
+            const alreadyHave = hasJoker(item.id);
+            // Stackable jokers: buying again while equipped bumps the stack
+            // (no slot consumed). Block at maxStack.
+            if (alreadyHave) {
+              if (!data.stackable) return;
+              const cur = jokerStack(item.id);
+              const cap = data.maxStack || 1;
+              if (cur >= cap) return;
+              runState.gold -= item.price;
+              equipJoker(data);
+              log("Stacked joker: " + data.name + " (now " + (cur + 1) + "/" + cap + "). (-" + item.price + 'g)');
+              renderShop();
+              return;
+            }
+            // Fresh equip — needs an open slot.
             if (runState.jokers.every(j => j !== null)) {
               log('Both joker slots full. Cannot equip ' + item.name + '.');
               return;
             }
-            const data = JOKER_CATALOG[item.id];
-            if (!data) return;
             runState.gold -= item.price;
             equipJoker(data);
             if (item.id === 'tattletale') {
@@ -5779,6 +5958,72 @@
     state.targetRank = candidates[Math.floor(Math.random() * candidates.length)];
     runState.loadedDieUsedThisFloor = true;
     log('Loaded Die: target rerolled to ' + state.targetRank + '.');
+    render();
+  }
+
+  // The Screamer — name a rank; for the rest of the round every card of
+  // that rank in any hand is publicly revealed (rendered face-up beneath
+  // each opponent's hand-size). Once per floor.
+  function useScreamer(rank) {
+    if (!hasJoker('screamer')) {
+      log('The Screamer is not equipped.');
+      return false;
+    }
+    if (!state || state.gameOver) {
+      log('The Screamer can only be used during a round.');
+      return false;
+    }
+    if (runState.screamerUsedThisFloor) {
+      log('The Screamer has already been used this floor.');
+      return false;
+    }
+    if (!RANKS.includes(rank)) {
+      log("The Screamer needs a valid rank: 'A', 'K', 'Q', or '10'.");
+      return false;
+    }
+    runState.screamerUsedThisFloor = true;
+    state.screamerRevealedRank = rank;
+    // Count for the log line so the player sees the immediate impact.
+    let total = 0;
+    for (let i = 0; i < NUM_PLAYERS; i++) {
+      if (state.hands[i]) total += state.hands[i].filter(c => c.rank === rank).length;
+    }
+    log("THE SCREAMER: every " + rank + " in every hand is revealed for the rest of this round (" +
+        total + " card" + (total === 1 ? '' : 's') + " visible).");
+    render();
+    return true;
+  }
+
+  // Crooked Die consumable — same effect as Loaded Die but consumes the
+  // item and gates on its own per-floor flag (so a player who has both
+  // could in principle use both per floor, which is fine).
+  function useCrookedDie() {
+    if (!state || state.gameOver) return;
+    if (runState.crookedDieUsedThisFloor) return;
+    if (!runState.inventory.crookedDie || runState.inventory.crookedDie < 1) return;
+    const candidates = RANKS.filter(r => r !== state.targetRank);
+    if (candidates.length === 0) return;
+    runState.inventory.crookedDie--;
+    state.targetRank = candidates[Math.floor(Math.random() * candidates.length)];
+    runState.crookedDieUsedThisFloor = true;
+    log('Crooked Die: target rerolled to ' + state.targetRank + '.');
+    render();
+  }
+
+  // Lie Detector consumable — armable. Once armed, the next time the
+  // human is the legitimate challenger (state.challengeOpen + their seat),
+  // a "Peek (Lie Detector)" button is exposed; clicking it consumes the
+  // arm and reveals truth/lie privately, leaving the LIAR button live so
+  // the player can decide whether to actually call.
+  function useLieDetector() {
+    if (!runState.inventory.lieDetector || runState.inventory.lieDetector < 1) return;
+    if (state && state.lieDetectorArmed) {
+      log('Lie Detector is already armed.');
+      return;
+    }
+    runState.inventory.lieDetector--;
+    if (state) state.lieDetectorArmed = true;
+    log('Lie Detector armed: next challenge window will let you peek before calling.');
     render();
   }
 
@@ -6805,6 +7050,9 @@
     // run sidebar, players can flip the peek direction from the dev console
     // (`lugenToggleWhisper()`). The next round's start-of-round peek uses
     // the current setting. Default direction is 'left' (next player).
+    // The Screamer activation. Pass a rank: 'A', 'K', 'Q', or '10'. Once
+    // per floor; sets state.screamerRevealedRank for the rest of this round.
+    window.lugenUseScreamer = (rank) => useScreamer((rank || '').toUpperCase());
     window.lugenToggleWhisper = () => {
       if (!runState || !runState.character || !runState.character.whisperPeek) {
         console.log('[Whisper] Active character is not The Whisper.');
