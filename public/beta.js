@@ -4192,6 +4192,59 @@
     startRun(charId);
   }
 
+  // Open a detail modal for a character — shows flavor, passive, and the
+  // full starting-joker description. Includes a Pick button that calls
+  // selectCharacter to actually start the run.
+  function _showCharacterDetailSP(charId) {
+    const char = CHARACTER_CATALOG[charId];
+    if (!char) return;
+    let modal = document.getElementById('betaSpCharDetailModal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'betaSpCharDetailModal';
+      modal.className = 'fixed inset-0 bg-black/85 backdrop-blur z-50 flex items-center justify-center p-4';
+      document.body.appendChild(modal);
+      modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.add('hidden'); });
+    }
+    const RARITY_TONE = {
+      Common: 'bg-gray-700 text-gray-100',
+      Uncommon: 'bg-emerald-700 text-emerald-100',
+      Rare: 'bg-blue-700 text-blue-100',
+      Legendary: 'bg-amber-700 text-amber-100',
+    };
+    const jokerInfo = (char.startingJoker && JOKER_CATALOG[char.startingJoker]) || null;
+    const rarityTone = jokerInfo ? (RARITY_TONE[jokerInfo.rarity] || 'bg-gray-700 text-gray-100') : '';
+    const jokerSection = jokerInfo
+      ? '<div class="bg-purple-900/40 border border-purple-400 rounded-lg p-3 mb-4">' +
+          '<div class="flex items-baseline gap-2 mb-1">' +
+            '<span class="text-[10px] uppercase tracking-widest text-purple-200 font-bold">Starting joker</span>' +
+            '<span class="font-bold">' + escapeHtml(jokerInfo.name) + '</span>' +
+            (jokerInfo.rarity ? '<span class="text-[10px] uppercase tracking-widest font-bold px-1.5 rounded ' + rarityTone + '">' + escapeHtml(jokerInfo.rarity) + '</span>' : '') +
+          '</div>' +
+          '<div class="text-xs text-emerald-100">' + escapeHtml(jokerInfo.desc || '') + '</div>' +
+        '</div>'
+      : '<div class="text-xs italic text-white/50 mb-4">No starting joker.</div>';
+    modal.innerHTML =
+      '<div class="bg-slate-800 border-2 border-emerald-400 p-6 rounded-2xl shadow-2xl max-w-md w-full">' +
+        '<div class="flex items-start justify-between mb-2">' +
+          '<h3 class="text-2xl font-extrabold">' + escapeHtml(char.name) + '</h3>' +
+          '<button id="betaSpCharDetailClose" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded-lg text-sm">Close</button>' +
+        '</div>' +
+        (char.flavor ? '<div class="text-xs italic text-white/60 mb-3">' + escapeHtml(char.flavor) + '</div>' : '') +
+        '<div class="text-sm text-emerald-200 mb-4">' + escapeHtml(char.passive || '') + '</div>' +
+        jokerSection +
+        '<div class="flex gap-2 mt-4">' +
+          '<button id="betaSpCharDetailPick" class="flex-1 bg-yellow-500 hover:bg-yellow-400 text-black font-bold px-4 py-2 rounded-lg transition">Pick ' + escapeHtml(char.name) + '</button>' +
+        '</div>' +
+      '</div>';
+    modal.querySelector('#betaSpCharDetailClose').addEventListener('click', () => modal.classList.add('hidden'));
+    modal.querySelector('#betaSpCharDetailPick').addEventListener('click', () => {
+      modal.classList.add('hidden');
+      selectCharacter(charId);
+    });
+    modal.classList.remove('hidden');
+  }
+
   // Build the character grid dynamically based on unlock state.
   function renderCharSelect() {
     const grid = document.getElementById('betaCharGrid');
@@ -4241,7 +4294,7 @@
 
       if (unlocked) {
         const cid = char.id;
-        btn.addEventListener('click', () => selectCharacter(cid));
+        btn.addEventListener('click', () => _showCharacterDetailSP(cid));
       }
       grid.appendChild(btn);
     }
@@ -6490,6 +6543,10 @@
   // browse modal. Also expose the deck inspector for symmetry.
   try {
     window.lugenOpenCatalog = (kind) => _openCatalog(kind);
+    window.lugenJokerCatalog = JOKER_CATALOG;
+    window.lugenRelicCatalog = RELIC_CATALOG;
+    window.lugenAffixDetails = AFFIX_DETAILS;
+    window.lugenCharacterCatalog = CHARACTER_CATALOG;
   } catch (e) {}
 
   // Wire any PvP catalog buttons defined via data-mp-catalog="<kind>".
