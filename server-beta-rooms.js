@@ -278,6 +278,7 @@ function publicBetaState(room, requestingPlayerId) {
     drawSize: room.drawPile.length,
     burnedCount: (room.burnedCards || []).length,
     burnCap: BURN_CAP,
+    seed: room.seed || null,
     lastPlay: room.lastPlay
       ? { playerIdx: room.lastPlay.playerIdx, claim: room.lastPlay.claim, count: room.lastPlay.count }
       : null,
@@ -666,12 +667,25 @@ function addPendingPeek(p, kind, payload) {
   p.pendingPeeks.push({ kind, payload });
 }
 
+// Generate a human-readable run seed like "4F2K-9A7B". Same alphabet as
+// the solo client; players can share it for matched seeds in future runs.
+function _generateRunSeed() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let s = '';
+  for (let i = 0; i < 8; i++) {
+    if (i === 4) s += '-';
+    s += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return s;
+}
+
 function startRun(room) {
   room.runStarted = true;
   room.currentFloor = 1;
   room.runOver = false;
   room.runWinnerId = null;
   room.currentFloorModifier = null;
+  room.seed = _generateRunSeed();
   room.currentBoss = isBossFloor(1) ? getBoss(1) : null;
   for (let i = 0; i < room.players.length; i++) {
     const p = room.players[i];
@@ -1591,9 +1605,18 @@ function pickFork(room, playerId, choice) {
     return { ok: true };
   }
   // 'shop' / 'reward' / 'event' / 'treasure' / 'continue'
+  // 'continue' is always allowed — it's the commit step from any prior pick.
   if (choice === 'continue') {
     room.forkPicks[playerId] = 'continue';
     return { ok: true };
+  }
+  // Lock: once a fork has been picked (browsing or resolved), block other
+  // fork choices. Players must finish or 'continue' out before changing.
+  // Without this guard a player could shop, take a Reward, then fire an
+  // Event — grabbing every fork's payout from a single visit.
+  const cur = room.forkPicks[playerId];
+  if (cur && cur !== 'continue') {
+    return { error: 'You already picked a fork — finish or continue first.' };
   }
   if (choice === 'reward') {
     if (!room.forkOffer.hasReward) return { error: 'Reward not offered this fork.' };

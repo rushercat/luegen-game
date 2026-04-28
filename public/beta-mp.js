@@ -500,7 +500,13 @@
     const isShopBrowsing = myPick === 'shop-browsing';
 
     let html =
-      '<h3 class="text-xl font-bold mb-2">Floor ' + offer.nextFloor + ' approaches</h3>' +
+      '<div class="flex items-baseline justify-between mb-2 gap-2 flex-wrap">' +
+        '<h3 class="text-xl font-bold">Floor ' + offer.nextFloor + ' approaches</h3>' +
+        // Run seed pill — visible at every fork, shareable to replay the run.
+        (s.seed
+          ? '<span class="text-[11px] text-white/60" title="Run seed — share to replay this exact run">Seed: <code class="bg-black/40 px-1 rounded">' + escapeHtml(s.seed) + '</code></span>'
+          : '') +
+      '</div>' +
       (offer.nextFloorIsBoss && offer.nextBoss
         ? '<p class="text-rose-300 mb-3">&#128081; Boss next: ' + escapeHtml(offer.nextBoss.name) + ' — ' + escapeHtml(offer.nextBoss.desc) + '</p>'
         : '') +
