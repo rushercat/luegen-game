@@ -14,15 +14,70 @@
 
   // Character roster (mirror of server) — for the lobby picker
   const CHARACTERS = [
-    { id: 'ace',       name: 'The Ace',       passive: 'Starts with Sleight of Hand.' },
-    { id: 'trickster', name: 'The Trickster', passive: 'Starts with Doubletalk.' },
-    { id: 'hoarder',   name: 'The Hoarder',   passive: 'Hand size +1 (6 cards). Starts with Slow Hand.' },
-    { id: 'banker',    name: 'The Banker',    passive: 'Start with 150g + a Gilded Ace. Starts with Surveyor.' },
-    { id: 'bait',      name: 'The Bait',      passive: 'Round start: peek 1 random card from a random opponent. Starts with Spiked Trap.' },
-    { id: 'gambler',   name: 'The Gambler',   passive: '+50% gold from all sources. 1 Cursed forced each floor. Starts with Black Hole.' },
-    { id: 'sharp',     name: 'The Sharp',     passive: 'Challenge window +1 second. Starts with Tattletale.' },
-    { id: 'whisper',   name: 'The Whisper',   passive: 'Round start: peek 1 card from your left or right neighbour (toggleable). Starts with Eavesdropper.' },
+    { id: 'ace',       name: 'The Ace',       startingJoker: 'sleightOfHand', passive: 'Starts with Sleight of Hand.' },
+    { id: 'trickster', name: 'The Trickster', startingJoker: 'doubletalk',    passive: 'Starts with Doubletalk.' },
+    { id: 'hoarder',   name: 'The Hoarder',   startingJoker: 'slowHand',      passive: 'Hand size +1 (6 cards). Starts with Slow Hand.' },
+    { id: 'banker',    name: 'The Banker',    startingJoker: 'surveyor',      passive: 'Start with 150g + a Gilded Ace. Starts with Surveyor.' },
+    { id: 'bait',      name: 'The Bait',      startingJoker: 'spikedTrap',    passive: 'Round start: peek 1 random card from a random opponent. Starts with Spiked Trap.' },
+    { id: 'gambler',   name: 'The Gambler',   startingJoker: 'blackHole',     passive: '+50% gold from all sources. 1 Cursed forced each floor. Starts with Black Hole.' },
+    { id: 'sharp',     name: 'The Sharp',     startingJoker: 'tattletale',    passive: 'Challenge window +1 second. Starts with Tattletale.' },
+    { id: 'whisper',   name: 'The Whisper',   startingJoker: 'eavesdropper',  passive: 'Round start: peek 1 card from your left or right neighbour (toggleable). Starts with Eavesdropper.' },
   ];
+
+  // Open a detail modal for a character — shows passive + starting joker info.
+  // Includes a "Pick this character" button that emits beta:pickCharacter and
+  // closes the modal. The card click in the lobby calls this instead of
+  // emitting directly, so players can see what they're picking before they pick.
+  function _showCharacterDetailMP(c, alreadyPicked) {
+    const jokerInfo = (window.lugenJokerCatalog && c.startingJoker)
+      ? window.lugenJokerCatalog[c.startingJoker]
+      : null;
+    let modal = document.getElementById('betaMpCharDetailModal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'betaMpCharDetailModal';
+      modal.className = 'fixed inset-0 bg-black/80 backdrop-blur z-50 flex items-center justify-center p-4';
+      document.body.appendChild(modal);
+      modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.add('hidden'); });
+    }
+    const RARITY_TONE = {
+      Common: 'bg-gray-700 text-gray-100',
+      Uncommon: 'bg-emerald-700 text-emerald-100',
+      Rare: 'bg-blue-700 text-blue-100',
+      Legendary: 'bg-amber-700 text-amber-100',
+    };
+    const rarityTone = jokerInfo ? (RARITY_TONE[jokerInfo.rarity] || 'bg-gray-700 text-gray-100') : '';
+    const jokerSection = jokerInfo
+      ? '<div class="bg-purple-900/40 border border-purple-400 rounded-lg p-3 mb-4">' +
+          '<div class="flex items-baseline gap-2 mb-1">' +
+            '<span class="text-[10px] uppercase tracking-widest text-purple-200 font-bold">Starting joker</span>' +
+            '<span class="font-bold">' + escapeHtml(jokerInfo.name) + '</span>' +
+            (jokerInfo.rarity ? '<span class="text-[10px] uppercase tracking-widest font-bold px-1.5 rounded ' + rarityTone + '">' + escapeHtml(jokerInfo.rarity) + '</span>' : '') +
+          '</div>' +
+          '<div class="text-xs text-emerald-100">' + escapeHtml(jokerInfo.desc || '') + '</div>' +
+        '</div>'
+      : '<div class="text-xs italic text-white/50 mb-4">No starting joker.</div>';
+    modal.innerHTML =
+      '<div class="bg-slate-800 border-2 border-purple-400 p-6 rounded-2xl shadow-2xl max-w-md w-full">' +
+        '<div class="flex items-start justify-between mb-2">' +
+          '<h3 class="text-2xl font-extrabold">' + escapeHtml(c.name) + '</h3>' +
+          '<button id="betaMpCharDetailClose" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded-lg text-sm">Close</button>' +
+        '</div>' +
+        '<div class="text-sm text-emerald-200 mb-4">' + escapeHtml(c.passive || '') + '</div>' +
+        jokerSection +
+        '<div class="flex gap-2 mt-4">' +
+          '<button id="betaMpCharDetailPick" class="flex-1 bg-yellow-500 hover:bg-yellow-400 text-black font-bold px-4 py-2 rounded-lg transition">' +
+            (alreadyPicked ? 'Re-confirm pick' : 'Pick ' + escapeHtml(c.name)) +
+          '</button>' +
+        '</div>' +
+      '</div>';
+    modal.querySelector('#betaMpCharDetailClose').addEventListener('click', () => modal.classList.add('hidden'));
+    modal.querySelector('#betaMpCharDetailPick').addEventListener('click', () => {
+      socket.emit('beta:pickCharacter', { characterId: c.id });
+      modal.classList.add('hidden');
+    });
+    modal.classList.remove('hidden');
+  }
 
   function affixRingClass(affix) {
     switch (affix) {
@@ -169,7 +224,7 @@
           '<div class="font-bold">' + escapeHtml(c.name) + '</div>' +
           '<div class="text-xs text-emerald-200 mt-1">' + escapeHtml(c.passive) + '</div>';
         btn.addEventListener('click', () => {
-          socket.emit('beta:pickCharacter', { characterId: c.id });
+          _showCharacterDetailMP(c, picked);
         });
         myPickEl.appendChild(btn);
       }
@@ -426,11 +481,32 @@
               '<div id="betaMpCleanseList" class="flex flex-wrap gap-2"></div>' +
               '</div>';
     } else if (isShopBrowsing) {
-      html += '<div class="bg-black/30 p-4 rounded-xl mb-4">' +
-              '<h4 class="font-bold mb-2">Shop</h4>' +
-              '<div class="text-xs text-emerald-200 mb-3">Your gold: <b>' + (s.players.find(p => p.id === myPlayerId) || {}).gold + 'g</b></div>' +
-              '<div id="betaMpShopList" class="grid grid-cols-1 sm:grid-cols-2 gap-2"></div>' +
-              '</div>';
+      const myGold = (s.players.find(p => p.id === myPlayerId) || {}).gold;
+      html +=
+        '<div class="bg-black/30 p-4 rounded-xl mb-4">' +
+          '<div class="flex justify-between items-center mb-3">' +
+            '<h4 class="text-xl font-bold">\ud83c\udfe6 Shop</h4>' +
+            '<span class="text-yellow-300 font-bold">\ud83d\udcb0 ' + myGold + 'g</span>' +
+          '</div>' +
+          // Top: Jokers section
+          '<div class="mb-4 bg-black/30 p-3 rounded-xl border border-purple-500/30">' +
+            '<h3 class="text-xs uppercase tracking-widest text-purple-300 font-bold mb-2">\ud83c\udca0 Jokers</h3>' +
+            '<div id="betaMpShopJokers" class="grid grid-cols-1 sm:grid-cols-3 gap-3"></div>' +
+          '</div>' +
+          // Bottom row: Cards (left) + Consumables (right)
+          '<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">' +
+            '<div class="bg-black/30 p-3 rounded-xl border border-blue-500/30">' +
+              '<h3 class="text-xs uppercase tracking-widest text-blue-300 font-bold mb-2">\ud83c\udca0 Cards</h3>' +
+              '<div id="betaMpShopCards" class="space-y-2"></div>' +
+            '</div>' +
+            '<div class="bg-black/30 p-3 rounded-xl border border-amber-500/30">' +
+              '<h3 class="text-xs uppercase tracking-widest text-amber-300 font-bold mb-2">\ud83c\udf81 Consumables &amp; Services</h3>' +
+              '<div id="betaMpShopConsumables" class="space-y-2"></div>' +
+            '</div>' +
+          '</div>' +
+          // Pending-service overlay still mounts to the original betaMpShopList id (kept hidden, used only for service flows)
+          '<div id="betaMpShopList" class="hidden"></div>' +
+        '</div>';
     } else if (myPick && myPick !== 'continue') {
       const labels = { 'reward-resolved': 'You took the Reward.', 'treasure-resolved': 'You took the Treasure.', 'event-resolved': 'Event resolved.', 'shop-browsing': 'Shopping...' };
       html += '<p class="text-emerald-300 mb-3">' + escapeHtml(labels[myPick] || myPick) + '</p>';
@@ -562,15 +638,122 @@
   }
 
 
+  // Build a single SP-style shop row for an item.
+  function _buildMpShopRow(item, me) {
+    const row = document.createElement('div');
+    const myJokers = (lastState.mine && lastState.mine.jokers) || [];
+    const myRelics = (lastState.mine && lastState.mine.relics) || [];
+    const equipped = item.type === 'joker' && myJokers.some(j => j && j.id === item.id);
+    const ownedRelic = item.type === 'relic' && myRelics.includes(item.id);
+    const slotsFull = item.type === 'joker' && myJokers.every(j => j !== null);
+    const inv = (lastState.mine && lastState.mine.inventory) || {};
+    const owned = item.type === 'joker' ? (equipped ? 1 : 0)
+                : item.type === 'relic' ? (ownedRelic ? 1 : 0)
+                : (inv[item.id] || 0);
+    const canAfford = me.gold >= item.price;
+    const disabled = !item.enabled || !canAfford || equipped || ownedRelic ||
+                     (item.type === 'joker' && slotsFull);
+    let btnLabel = !item.enabled ? 'Soon' : equipped ? 'Equipped' : ownedRelic ? 'Owned'
+                  : (item.type === 'joker' && slotsFull) ? 'Slots full' : 'Buy';
+    row.className = 'bg-black/40 hover:bg-black/50 transition p-3 rounded-xl border border-white/10' +
+                    (item.enabled ? '' : ' opacity-60');
+    const priceColor = canAfford ? 'bg-yellow-400 text-black' : 'bg-rose-500 text-white';
+    row.innerHTML =
+      '<div class="font-bold">' + escapeHtml(item.name) + '</div>' +
+      '<div class="text-xs text-emerald-200 mt-1 mb-2">' + escapeHtml(item.desc) + '</div>' +
+      '<div class="flex items-center justify-between">' +
+        '<div class="text-xs text-emerald-300">Owned: ' + owned + '</div>' +
+        '<div class="flex items-center gap-2">' +
+          '<span class="' + priceColor + ' px-2 py-0.5 rounded-full text-xs font-bold">' + item.price + 'g</span>' +
+          '<button class="bg-yellow-500 hover:bg-yellow-400 text-black transition px-3 py-1 rounded font-bold text-sm disabled:opacity-40 disabled:cursor-not-allowed"' +
+            (disabled ? ' disabled' : '') + '>' + btnLabel + '</button>' +
+        '</div>' +
+      '</div>';
+    if (!disabled) {
+      row.querySelector('button').addEventListener('click', () => {
+        socket.emit('beta:shopBuy', { itemId: item.id });
+      });
+    }
+    return row;
+  }
+
+  // Build a row for a buyable run-deck card (Cards section).
+  function _buildMpShopCardRow(off, me) {
+    const row = document.createElement('div');
+    const deckCount = (lastState.mine && lastState.mine.runDeck && lastState.mine.runDeck.length) || 0;
+    const cap = 24;
+    const deckFull = deckCount >= cap;
+    const canAfford = me.gold >= off.price;
+    const bought = !!off.boughtByMe;
+    const disabled = bought || !canAfford || deckFull;
+    let btnLabel = bought ? 'Bought' : (deckFull ? 'Deck full' : 'Buy');
+    const priceColor = canAfford ? 'bg-yellow-400 text-black' : 'bg-rose-500 text-white';
+    row.className = 'bg-black/40 hover:bg-black/50 transition p-3 rounded-xl border border-white/10' +
+                    (bought ? ' opacity-50' : '');
+    const ring = affixRingClass(off.affix);
+    const cardHtml =
+      '<div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ' + (ring || '') + '" style="width:32px;height:44px;">' + escapeHtml(off.rank) + '</div>';
+    row.innerHTML =
+      '<div class="flex items-center gap-3 mb-1">' +
+        cardHtml +
+        '<div>' +
+          '<div class="font-bold">' + escapeHtml(off.rank) + (off.affix ? ' \u00b7 ' + escapeHtml(off.affix) : ' \u00b7 plain') + '</div>' +
+          '<div class="text-xs text-emerald-200">' + (off.affix ? 'Affixed card joins your run deck.' : 'Plain card joins your run deck.') + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="flex items-center justify-between">' +
+        '<div class="text-xs text-emerald-300">Run deck: ' + deckCount + ' / ' + cap + '</div>' +
+        '<div class="flex items-center gap-2">' +
+          '<span class="' + priceColor + ' px-2 py-0.5 rounded-full text-xs font-bold">' + off.price + 'g</span>' +
+          '<button class="bg-yellow-500 hover:bg-yellow-400 text-black transition px-3 py-1 rounded font-bold text-sm disabled:opacity-40 disabled:cursor-not-allowed"' + (disabled ? ' disabled' : '') + '>' + btnLabel + '</button>' +
+        '</div>' +
+      '</div>';
+    if (!disabled) {
+      row.querySelector('button').addEventListener('click', () => {
+        socket.emit('beta:shopBuyCard', { offerId: off.offerId });
+      });
+    }
+    return row;
+  }
+
   function renderShopList() {
     const s = lastState;
+    const me = s.players.find(p => p.id === myPlayerId);
+    if (!me) return;
+
+    // Render the 3 SP-style sections (jokers / cards / consumables).
+    const jokersEl = document.getElementById('betaMpShopJokers');
+    const cardsEl  = document.getElementById('betaMpShopCards');
+    const consEl   = document.getElementById('betaMpShopConsumables');
+    if (jokersEl) {
+      jokersEl.innerHTML = '';
+      const jokers = (s.shopOffer || []).filter(i => i.type === 'joker');
+      if (jokers.length === 0) jokersEl.innerHTML = '<p class="text-xs text-white/40 italic">No jokers in stock.</p>';
+      else for (const j of jokers) jokersEl.appendChild(_buildMpShopRow(j, me));
+    }
+    if (cardsEl) {
+      cardsEl.innerHTML = '';
+      const cardOffers = (s.shopCardOffer || []);
+      if (cardOffers.length === 0) cardsEl.innerHTML = '<p class="text-xs text-white/40 italic">No cards in stock.</p>';
+      else for (const off of cardOffers) cardsEl.appendChild(_buildMpShopCardRow(off, me));
+    }
+    if (consEl) {
+      consEl.innerHTML = '';
+      const cons = (s.shopOffer || []).filter(i => i.type !== 'joker' && i.type !== 'relic');
+      if (cons.length === 0) consEl.innerHTML = '<p class="text-xs text-white/40 italic">No consumables in stock.</p>';
+      else for (const c of cons) consEl.appendChild(_buildMpShopRow(c, me));
+    }
+
+    // Pending-service overlay still uses the original list element (now hidden
+    // unless a service is mid-apply). It mounts above everything via fixed CSS
+    // when needed. We re-show it when a pending service exists.
     const list = document.getElementById('betaMpShopList');
     if (!list) return;
     list.innerHTML = '';
-    const me = s.players.find(p => p.id === myPlayerId);
-    // Pending-service picker — show above the shop grid until applied
+    list.classList.add('hidden');
     const pending = s.mine && s.mine.pendingService;
     if (pending) {
+      list.classList.remove('hidden');
       const overlay = document.createElement('div');
       overlay.className = 'col-span-full bg-amber-900/40 border border-amber-400 p-3 rounded-xl mb-3';
       overlay.innerHTML = '<div class="font-bold text-amber-200 mb-2">Apply: ' + escapeHtml(pending.itemId) + '</div>';
@@ -645,28 +828,6 @@
       cancelBtn.addEventListener('click', () => socket.emit('beta:cancelService'));
       overlay.appendChild(cancelBtn);
       list.appendChild(overlay);
-    }
-    for (const item of (s.shopOffer || [])) {
-      const canAfford = me.gold >= item.price;
-      const myJokers = (s.mine && s.mine.jokers) || [];
-      const equipped = item.type === 'joker' && myJokers.some(j => j && j.id === item.id);
-      const myRelics = (s.mine && s.mine.relics) || [];
-      const ownedRelic = item.type === 'relic' && myRelics.includes(item.id);
-      const slotsFull = item.type === 'joker' && myJokers.every(j => j !== null);
-      const disabled = !item.enabled || !canAfford || equipped || ownedRelic || (item.type === 'joker' && slotsFull);
-      let label = !item.enabled ? 'Soon' : equipped ? 'Equipped' : ownedRelic ? 'Owned' : (slotsFull && item.type === 'joker') ? 'Slots full' : 'Buy';
-      const row = document.createElement('div');
-      row.className = 'relative bg-black/40 p-3 rounded-xl border border-white/10 text-sm';
-      const priceCls = canAfford ? 'bg-yellow-400 text-black' : 'bg-rose-500 text-white';
-      row.innerHTML =
-        '<div class="absolute -top-2 left-3 px-2 py-0.5 rounded-full text-xs font-bold ' + priceCls + '">' + item.price + 'g</div>' +
-        '<div class="font-bold mt-1">' + escapeHtml(item.name) + '</div>' +
-        '<div class="text-xs text-emerald-200 mt-1 mb-2">' + escapeHtml(item.desc) + '</div>' +
-        '<button class="bg-yellow-500 hover:bg-yellow-400 text-black px-3 py-1 rounded font-bold text-sm disabled:opacity-40 disabled:cursor-not-allowed"' +
-          (disabled ? ' disabled' : '') + '>' + label + '</button>';
-      const btn = row.querySelector('button');
-      if (!disabled) btn.addEventListener('click', () => socket.emit('beta:shopBuy', { itemId: item.id }));
-      list.appendChild(row);
     }
   }
 

@@ -288,6 +288,9 @@
   }
   function isCharUnlocked(char) {
     if (char.unlockAlways) return true;
+    // Guests (no account) only get The Rookie. Sign in to unlock the rest
+    // through floor progression / run wins.
+    if (!getAuthToken()) return false;
     if (char.unlockOnRunWin) return hasWonRun();
     if (char.unlockAtFloor !== undefined) {
       return getMaxFloorReached() >= char.unlockAtFloor;
@@ -388,6 +391,7 @@
     bookmark:     { id: 'bookmark',     name: 'The Bookmark',     price: 350, desc: 'Boss reward. End of each round: optionally save a hand card into your run deck (replacing one).' },
     steelSpine:   { id: 'steelSpine',   name: 'Steel Spine',      price: 200, desc: 'Treasure. Cursed cards block Liar for 1 turn instead of 2 after pickup.' },
     stackedDeck:  { id: 'stackedDeck',  name: 'Stacked Deck',     price: 250, desc: 'Treasure. Run deck cap raised from 24 to 32.' },
+    mogul:        { id: 'mogul',        name: 'The Mogul',        price: 400, desc: "Treasure (Lugen-locked). Shop offers +1 of each (4 jokers, 4 cards, 4 consumables) and 10% off everything. Unlocks after 5 Lugen kills.", unlock: { type: 'lugenKills', count: 5 } },
   };
 
   const HEART_SHARDS_REQUIRED = 3;     // 3 shards = +1 Heart
@@ -3419,6 +3423,30 @@
     return false;
   }
 
+  // Per-account relic unlock check. Returns true if no condition or condition met.
+  function isRelicUnlocked(id) {
+    const r = RELIC_CATALOG[id];
+    if (!r || !r.unlock) return true;
+    const u = r.unlock;
+    if (u.type === 'lugenKills') {
+      const prog = (typeof _achGetProgress === 'function') ? _achGetProgress() : {};
+      const kills = (prog.bossKills && prog.bossKills.lugen) || 0;
+      return kills >= (u.count || 0);
+    }
+    return true;
+  }
+  function relicUnlockHint(id) {
+    const r = RELIC_CATALOG[id];
+    if (!r || !r.unlock) return null;
+    const u = r.unlock;
+    if (u.type === 'lugenKills') {
+      const prog = (typeof _achGetProgress === 'function') ? _achGetProgress() : {};
+      const kills = (prog.bossKills && prog.bossKills.lugen) || 0;
+      return 'Beat Lugen ' + (u.count || 0) + ' times (progress ' + kills + '/' + (u.count || 0) + ').';
+    }
+    return null;
+  }
+
   // Phase 7+: relic accessors
   function hasRelic(relicId) {
     return runState && Array.isArray(runState.relics) && runState.relics.includes(relicId);
@@ -4250,6 +4278,22 @@
     const grid = document.getElementById('betaCharGrid');
     if (!grid) return;
     grid.innerHTML = '';
+    const isGuest = !getAuthToken();
+    // Show / refresh a guest banner above the grid prompting sign-in.
+    let banner = document.getElementById('betaCharGuestBanner');
+    if (isGuest) {
+      if (!banner) {
+        banner = document.createElement('div');
+        banner.id = 'betaCharGuestBanner';
+        banner.className = 'mb-4 px-4 py-3 rounded-xl border border-yellow-400/60 bg-yellow-900/30 text-sm text-yellow-100 text-center';
+        grid.parentNode.insertBefore(banner, grid);
+      }
+      banner.innerHTML =
+        '<b>Playing as guest.</b> Only <span class="text-yellow-300 font-bold">The Rookie</span> is available. ' +
+        'Sign in to unlock the other characters as you reach new floors and beat bosses — your progress is saved across runs.';
+    } else if (banner) {
+      banner.remove();
+    }
     // Toggle admin "Unlock All" button visibility
     const adminBtn = document.getElementById('betaAdminUnlockBtn');
     if (adminBtn) {
@@ -4287,8 +4331,11 @@
                  escapeHtml(char.passive) + '</div>';
         inner += '<div class="text-xs text-purple-300">' + starterLine + '</div>';
       } else {
-        inner += '<div class="text-xs text-rose-300">Locked &mdash; ' +
-                 escapeHtml(char.unlockHint || 'Keep playing.') + '</div>';
+        const isGuest = !getAuthToken();
+        const lockText = isGuest
+          ? 'Sign in to start unlocking — then ' + (char.unlockHint || 'keep playing.')
+          : (char.unlockHint || 'Keep playing.');
+        inner += '<div class="text-xs text-rose-300">Locked &mdash; ' + escapeHtml(lockText) + '</div>';
       }
       btn.innerHTML = inner;
 
@@ -4571,22 +4618,32 @@
 
   // Phase 8+: rotating shop offer — pick a small subset each shop visit
   const SHOP_RARITY_WEIGHTS = { Common: 60, Uncommon: 25, Rare: 10, Legendary: 5 };
-  const SHOP_OFFER_CONSUMABLES = 3;
-  const SHOP_OFFER_JOKERS = 3;
+  const SHOP_OFFER_CONSUMABLES_BASE = 3;
+  const SHOP_OFFER_JOKERS_BASE = 3;
+  const SHOP_OFFER_CARDS_BASE = 3;
   const SHOP_OFFER_RELICS = 2;
+  function shopOfferCounts() {
+    const bonus = hasRelic('mogul') ? 1 : 0;
+    return {
+      consumables: SHOP_OFFER_CONSUMABLES_BASE + bonus,
+      jokers: SHOP_OFFER_JOKERS_BASE + bonus,
+      cards: SHOP_OFFER_CARDS_BASE + bonus,
+    };
+  }
 
   function regenerateShopOffer() {
     if (!runState) return;
     // Consumables/services pool — anything not a joker or relic
     const consumablesPool = SHOP_ITEMS.filter(i => i.type !== 'joker' && i.type !== 'relic');
-    const pickedConsumables = shuffle(consumablesPool).slice(0, SHOP_OFFER_CONSUMABLES);
+    const counts = shopOfferCounts();
+    const pickedConsumables = shuffle(consumablesPool).slice(0, counts.consumables);
 
     // Jokers — rarity-weighted, skip already-equipped
     const ownedJokerIds = (runState.jokers || []).filter(j => j).map(j => j.id);
     const jokerPool = SHOP_ITEMS.filter(i => i.type === 'joker' && !ownedJokerIds.includes(i.id));
     const pickedJokers = [];
     const remaining = jokerPool.slice();
-    while (pickedJokers.length < SHOP_OFFER_JOKERS && remaining.length > 0) {
+    while (pickedJokers.length < counts.jokers && remaining.length > 0) {
       let totalWeight = 0;
       for (const j of remaining) {
         const cat = JOKER_CATALOG[j.id];
@@ -4614,7 +4671,7 @@
     const SHOP_CARD_RANKS = ['A', 'K', 'Q', '10'];
     const SHOP_CARD_PRICE = 100;
     runState.shopCardOffer = [];
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < counts.cards; i++) {
       const rank = SHOP_CARD_RANKS[Math.floor(Math.random() * SHOP_CARD_RANKS.length)];
       const hasAffix = Math.random() < 0.5;
       const affix = hasAffix ? SHOP_CARD_AFFIXES[Math.floor(Math.random() * SHOP_CARD_AFFIXES.length)] : null;
@@ -4758,7 +4815,8 @@
     hideAllPanels();
     const owned = (runState.relics || []);
     const allRelicIds = Object.keys(RELIC_CATALOG);
-    const unowned = allRelicIds.filter(id => !owned.includes(id));
+    // Filter by ownership AND unlock condition (e.g., Mogul is gated behind 5 Lugen kills).
+    const unowned = allRelicIds.filter(id => !owned.includes(id) && isRelicUnlocked(id));
     const offers = shuffle(unowned).slice(0, Math.min(2, unowned.length));
 
     const list = document.getElementById('betaTreasureOffers');
@@ -4876,11 +4934,13 @@
       const engOn = !!(runState.character && runState.character.affixDiscount);
       const isAffixSvc = engOn ? ENGINEER_IDS.includes(item.id) : false;
       const richFolkOn = !!(runState && runState.currentFloorModifier === 'richFolk');
+      const mogulOn = hasRelic('mogul');
       // Stack: prefer the bigger discount available.
       let baseDisc = 0;
       if (hasJoker('forgeHand') && FORGE_HAND_IDS.includes(item.id)) baseDisc = Math.max(baseDisc, 0.25);
       if (engOn && isAffixSvc) baseDisc = Math.max(baseDisc, runState.character.affixDiscount || 0);
       if (richFolkOn && item.type === 'joker') baseDisc = Math.max(baseDisc, 0.50);
+      if (mogulOn) baseDisc = Math.max(baseDisc, 0.10);  // The Mogul: 10% off everything in shop
       const forgeDiscount = baseDisc;
       // Mutate item.price so the rest of the buy flow uses the discounted price.
       if (forgeDiscount > 0 && !item._origPrice) {
@@ -5030,6 +5090,15 @@
     const row = document.createElement('div');
     const cap = (typeof runDeckCap === 'function') ? runDeckCap() : 24;
     const deckFull = (runState.runDeck || []).length >= cap;
+    // The Mogul relic: 10% off card price as well.
+    const mogulOn = hasRelic('mogul');
+    if (mogulOn && !off._origPrice) {
+      off._origPrice = off.price;
+      off.price = Math.floor(off.price * 0.90);
+    } else if (!mogulOn && off._origPrice) {
+      off.price = off._origPrice;
+      delete off._origPrice;
+    }
     const canAfford = runState.gold >= off.price;
     const disabled = off.bought || !canAfford || deckFull;
     let btnLabel = off.bought ? 'Bought' : (deckFull ? 'Deck full' : 'Buy');
@@ -6513,16 +6582,21 @@
   }
   function _relicRow(r, ownedFlag) {
     const row = document.createElement('div');
+    const locked = !ownedFlag && r.unlock && !isRelicUnlocked(r.id);
     row.className = 'rounded-lg p-3 border ' + (ownedFlag
       ? 'bg-amber-900/50 border-amber-300'
-      : 'bg-black/30 border-white/10');
+      : (locked ? 'bg-black/40 border-white/5 opacity-70' : 'bg-black/30 border-white/10'));
+    const badges =
+      (ownedFlag ? '<span class="text-[10px] uppercase tracking-widest font-bold px-1.5 rounded bg-amber-400 text-black">Owned</span>' : '') +
+      (locked ? '<span class="text-[10px] uppercase tracking-widest font-bold px-1.5 rounded bg-rose-500 text-white">Locked</span>' : '');
+    const hint = locked ? relicUnlockHint(r.id) : null;
     row.innerHTML =
       '<div class="flex items-baseline gap-2 mb-1">' +
-        '<span class="font-bold">' + escapeHtml(r.name) + '</span>' +
-        (ownedFlag ? '<span class="text-[10px] uppercase tracking-widest font-bold px-1.5 rounded bg-amber-400 text-black">Owned</span>' : '') +
+        '<span class="font-bold">' + escapeHtml(r.name) + '</span>' + badges +
         '<span class="ml-auto text-xs text-yellow-300">' + (r.price || 0) + 'g</span>' +
       '</div>' +
-      '<div class="text-xs text-emerald-100">' + escapeHtml(r.desc) + '</div>';
+      '<div class="text-xs text-emerald-100">' + escapeHtml(r.desc) + '</div>' +
+      (hint ? '<div class="text-[10px] text-rose-200 mt-1">Unlock: ' + escapeHtml(hint) + '</div>' : '');
     return row;
   }
 

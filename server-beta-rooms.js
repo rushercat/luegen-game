@@ -207,6 +207,7 @@ function newBetaRoom(id) {
     forkOffer: null,        // { hasShop: true, hasReward: true, hasEvent: true, hasTreasure: bool }
     forkPicks: {},          // playerId -> 'shop' | 'reward' | 'event' | 'treasure' | 'continue'
     shopOffer: [],          // generated SHOP_ITEMS subset for this floor
+    shopCardOffer: [],      // generated card offers (3 per visit) — see regenerateShopOffer
     rewardChoice: {},       // playerId -> { type: 'gold' | 'upgrade', resolved: bool }
     eventResults: {},       // playerId -> { event, gold }
     currentFloorModifier: null,
@@ -281,6 +282,10 @@ function publicBetaState(room, requestingPlayerId) {
     } : null,
     shopOffer: (room.shopOffer || []).map(i => ({
       id: i.id, name: i.name, price: i.price, desc: i.desc, type: i.type, enabled: i.enabled,
+    })),
+    shopCardOffer: (room.shopCardOffer || []).map(c => ({
+      offerId: c.offerId, rank: c.rank, affix: c.affix, price: c.price,
+      boughtByMe: !!(c.bought && me && c.bought[me.id]),
     })),
     players: room.players.map(p => ({
       id: p.id,
@@ -575,6 +580,42 @@ function regenerateShopOffer(room) {
   }
   // Relics removed from regular shop — they are awarded post-boss only.
   room.shopOffer = [].concat(pickedConsumables, pickedJokers);
+  // Cards section: 3 randomly-rolled run-deck cards. 50% chance of an
+  // affix from the positive-or-neutral pool (no Cursed). Mirrors the SP shop.
+  const SHOP_CARD_AFFIXES = ['gilded', 'mirage', 'echo', 'hollow', 'glass', 'steel', 'spiked'];
+  const SHOP_CARD_RANKS = ['A', 'K', 'Q', '10'];
+  const SHOP_CARD_PRICE = 100;
+  room.shopCardOffer = [];
+  for (let i = 0; i < 3; i++) {
+    const rank = SHOP_CARD_RANKS[Math.floor(Math.random() * SHOP_CARD_RANKS.length)];
+    const hasAffix = Math.random() < 0.5;
+    const affix = hasAffix ? SHOP_CARD_AFFIXES[Math.floor(Math.random() * SHOP_CARD_AFFIXES.length)] : null;
+    room.shopCardOffer.push({
+      offerId: 'shopcard_' + Date.now() + '_' + i + '_' + Math.floor(Math.random() * 100000),
+      rank, affix, price: SHOP_CARD_PRICE,
+      bought: {}, // map of playerId -> true once bought
+    });
+  }
+}
+
+// Buy a card from the shop's Cards section. Each player may buy each
+// offer at most once. Cards are priced at 100g; deck cap is 24.
+function shopBuyCard(room, playerId, offerId) {
+  const p = findPlayerById(room, playerId);
+  if (!p) return { error: 'Not in room.' };
+  if (room.phase !== 'fork') return { error: 'Shop is closed.' };
+  const off = (room.shopCardOffer || []).find(c => c.offerId === offerId);
+  if (!off) return { error: 'Card offer not found.' };
+  if (off.bought && off.bought[playerId]) return { error: 'You already bought this card.' };
+  if ((p.gold || 0) < off.price) return { error: 'Not enough gold.' };
+  if ((p.runDeck || []).length >= 24) return { error: 'Run deck is at the cap (24).' };
+  p.gold -= off.price;
+  const newId = 'p' + room.players.indexOf(p) + '_shop_' + off.offerId;
+  p.runDeck.push({ rank: off.rank, id: newId, owner: room.players.indexOf(p), affix: off.affix || null });
+  off.bought = off.bought || {};
+  off.bought[playerId] = true;
+  log(room, p.name + ' bought a ' + off.rank + (off.affix ? ' [' + off.affix + ']' : ' (plain)') + ' for ' + off.price + 'g.');
+  return { ok: true };
 }
 function addPendingPeek(p, kind, payload) {
   p.pendingPeeks = p.pendingPeeks || [];
@@ -2079,6 +2120,7 @@ module.exports = {
   rewardPick,
   applyCleanse,
   shopBuy,
+  shopBuyCard,
   applyService,
   cancelService,
   maybeAdvanceFromFork,
