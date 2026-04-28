@@ -6306,6 +6306,21 @@
   const _catAch = document.getElementById('betaCatalogAchievementsBtn');
   if (_catAch) _catAch.addEventListener('click', () => _openCatalog('achievements'));
 
+  // Expose the catalog modal globally so the PvP UI (beta-mp.js / inline
+  // markup with data-mp-catalog) can open it without re-implementing the
+  // browse modal. Also expose the deck inspector for symmetry.
+  try {
+    window.lugenOpenCatalog = (kind) => _openCatalog(kind);
+  } catch (e) {}
+
+  // Wire any PvP catalog buttons defined via data-mp-catalog="<kind>".
+  document.querySelectorAll('[data-mp-catalog]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const kind = btn.getAttribute('data-mp-catalog');
+      if (kind) _openCatalog(kind);
+    });
+  });
+
   // Phase 6: resume/restart prompt when re-entering beta with an active run.
   function showResumeModal() {
     const modal = document.getElementById('betaResumeModal');
