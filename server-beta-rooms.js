@@ -1901,7 +1901,7 @@ function addPlayer(room, socket, name, user) {
     connected: true,
     removalTimer: null,
     // Roguelike resources
-    jokers: [null, null],      // 2 slots
+    jokers: [null, null, null, null, null],  // 5 slots, flat (no per-act ramp)
     inventory: {},             // consumableId -> count
     relics: [],                // relicId list
     eavesdropperLastFiredRound: -99,

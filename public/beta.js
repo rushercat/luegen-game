@@ -973,7 +973,10 @@
       gold: (character && character.startingGold) || 0,
       inventory: { smokeBomb: 0, counterfeit: 0, jackBeNimble: 0 },
       runDeck: buildInitialRunDeck(0),
-      jokers: [null, null],
+      // 5 joker slots from run start (flat, no per-act ramp). Was [null,null]
+      // with the ramp 2→3→5 across acts; flattened so builds aren't gated
+      // on floor progression.
+      jokers: [null, null, null, null, null],
       // Stack counts for stackable jokers, keyed by jokerId. Default stack
       // when a stackable joker is first equipped is 1. Buying again while
       // already equipped bumps the count instead of consuming a 2nd slot,
@@ -3789,10 +3792,13 @@
     return infused;
   }
 
-  function jokerSlotsForFloor(floor) {
-    if (floor <= 3) return 2;
-    if (floor <= 6) return 3;
-    return 5;
+  // Flat 5 joker slots at every floor (per-act ramp removed). Kept the
+  // function shape so existing callers continue to work; ensureSoloJokerSlots
+  // still grows the array if it ever happens to be shorter (e.g. legacy
+  // saves with 2-slot starts) and never shrinks.
+  const SOLO_JOKER_SLOTS = 5;
+  function jokerSlotsForFloor(_floor) {
+    return SOLO_JOKER_SLOTS;
   }
   function ensureSoloJokerSlots(floor) {
     if (!runState) return;
