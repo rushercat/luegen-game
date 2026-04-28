@@ -306,7 +306,10 @@ function publicBetaState(room, requestingPlayerId) {
     currentTurnIdx: room.currentTurnIdx,
     pileSize: room.pile.length,
     drawSize: room.drawPile.length,
-    burnedCount: (room.burnedCards || []).length,
+    // Per-floor counter (was per-round buffer length). Display matches the
+    // design doc's "live counter" of total burns toward the floor cap.
+    burnedCount: room.burnedCountThisFloor || 0,
+    burnedThisRound: (room.burnedCards || []).length,
     burnCap: BURN_CAP,
     seed: room.seed || null,
     lastPlay: room.lastPlay
@@ -584,13 +587,23 @@ function applyGlassBurnOnReveal(room, revealedCards) {
       }
     }
     room.burnedCards = (room.burnedCards || []).concat(burnedThisTrigger);
-    log(room, `Glass: burned ${burnedThisTrigger.length} card${burnedThisTrigger.length === 1 ? '' : 's'} (${room.burnedCards.length}/${BURN_CAP} total).`);
-    if (room.burnedCards.length > BURN_CAP) {
+    // Per-floor burn counter: previously this was per-round, which let a
+    // Glass build burn 8 cards every single round (24+ across a floor).
+    // Now it accumulates across all rounds of the floor; reset only on
+    // floor advance.
+    room.burnedCountThisFloor = (room.burnedCountThisFloor || 0) + burnedThisTrigger.length;
+    log(room, `Glass: burned ${burnedThisTrigger.length} card${burnedThisTrigger.length === 1 ? '' : 's'} (${room.burnedCountThisFloor}/${BURN_CAP} this floor).`);
+    if (room.burnedCountThisFloor > BURN_CAP) {
+      // Cap reached for the FLOOR. Recycle whatever's in the current
+      // round's burn buffer back into the draw pile (we can't reach into
+      // prior rounds — those cards already returned to their owners on
+      // round-end). Reset the counter so a new burn cycle can begin.
       const recycled = room.burnedCards.length;
       for (const c of room.burnedCards) room.drawPile.push(c);
       room.drawPile = shuffle(room.drawPile);
       room.burnedCards = [];
-      log(room, `Burn cap reached — ${recycled} burned cards shuffled back into the draw pile. Counter resets.`);
+      room.burnedCountThisFloor = 0;
+      log(room, `Burn cap reached — ${recycled} burned cards (this round) shuffled back into the draw pile. Floor counter resets.`);
     }
   }
 }
@@ -776,6 +789,8 @@ function startRun(room) {
   room.tattletaleChargesFloor = {};
   room.screamerChargesFloor = {};
   room.loadedDieUsedFloor = {};
+  // Burn cap is per-floor — reset on run start and floor advance.
+  room.burnedCountThisFloor = 0;
   for (let i = 0; i < room.players.length; i++) {
     const p = room.players[i];
     p.runDeck = buildInitialRunDeck(i);
@@ -849,6 +864,10 @@ function applyFloorAffixesToDrawPile(drawPile, floor) {
 function startRound(room) {
   // Reset round-level state
   room.phase = 'round';
+  // Per-round buffer (used for the recycle-into-draw-pile mechanic when
+  // the per-floor cap fires) — clears every round. The PER-FLOOR counter
+  // (room.burnedCountThisFloor) intentionally does NOT reset here; only
+  // floor advance / boss progression clears it.
   room.burnedCards = [];
   for (const p of room.players) {
     p.hand = [];
@@ -1625,33 +1644,34 @@ function endFloor(room, winnerIdx) {
   // +Gold for floor winner
   winner.gold = (winner.gold || 0) + GOLD_PER_FLOOR_WIN;
 
-  // Hearts loss for players with 0 round wins this floor (the laggers)
-  const survivors = [];
+  // Pass 1 — heart loss for players with 0 round wins this floor (laggers).
   for (let i = 0; i < room.players.length; i++) {
     const p = room.players[i];
     if (p.eliminated) continue;
     if ((p.roundsWon || 0) === 0) {
       p.hearts = Math.max(0, (p.hearts || 0) - 1);
       log(room, `${p.name} lost a Heart (no round wins this floor) — ${p.hearts} left.`);
-      // Heart shards (if won floor at 1 heart — doesn't apply to laggers)
       if (p.hearts <= 0) {
         p.eliminated = true;
         log(room, `${p.name} ran out of Hearts and is eliminated.`);
-      } else {
-        survivors.push(p);
       }
-    } else {
-      // Floor winner: heart-shard logic — winning at 1 Heart gives a shard
-      if (i === winnerIdx && p.hearts === 1) {
-        p.heartShards = (p.heartShards || 0) + 1;
-        log(room, `${p.name} earned a Heart shard (${p.heartShards}/${HEART_SHARDS_REQUIRED}).`);
-        if (p.heartShards >= HEART_SHARDS_REQUIRED) {
-          p.hearts++;
-          p.heartShards = 0;
-          log(room, `${p.name} restored a Heart from shards!`);
-        }
+    }
+  }
+  // Pass 2 — heart-shard awards. Anyone still alive at exactly 1 Heart at
+  // end of floor earns a shard (3 shards = +1 Heart). This includes the
+  // runner-up who survived on 1 Heart but didn't win — design 4.7. The
+  // earlier rule only awarded the floor winner, which felt unfair to a
+  // last-place finisher who scrapped through on a single Heart.
+  for (const p of room.players) {
+    if (p.eliminated) continue;
+    if (p.hearts === 1) {
+      p.heartShards = (p.heartShards || 0) + 1;
+      log(room, `${p.name} earned a Heart shard (${p.heartShards}/${HEART_SHARDS_REQUIRED}).`);
+      if (p.heartShards >= HEART_SHARDS_REQUIRED) {
+        p.hearts++;
+        p.heartShards = 0;
+        log(room, `${p.name} restored a Heart from shards!`);
       }
-      survivors.push(p);
     }
   }
 
@@ -1795,6 +1815,9 @@ function maybeAdvanceFromFork(room) {
   // Without this clear, the boss-floor winner would lead every round of
   // the next floor too.
   room.nextRoundLeaderIdx = null;
+  // Reset the per-floor burn counter — Glass builds get 8 burns per floor,
+  // not per round.
+  room.burnedCountThisFloor = 0;
   // Auditor boss: roll N for "every Nth play auto-fires LIAR" once per
   // floor. Range [2..4] keeps the tell legible (1 = every play, too loud;
   // 5+ rarely fires in best-of-3).
@@ -2675,6 +2698,8 @@ function adminSkipFloor(room, playerId, floor) {
   } else {
     room.auditorEveryN = null;
   }
+  // Burn cap is per-floor — reset when admin jumps floors too.
+  room.burnedCountThisFloor = 0;
   log(room, `Admin: skipped to Floor ${n}.`);
   startRound(room);
   return { ok: true };
