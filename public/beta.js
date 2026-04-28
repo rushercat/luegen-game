@@ -5926,6 +5926,246 @@
     });
   }
 
+  // Affix-legend click-to-explain — wires every legend button in the Card
+  // Inspector to open the existing info modal with the affix's full effect.
+  const AFFIX_DETAILS = {
+    gilded: {
+      name: 'Gilded',
+      tag: 'Passive (while held)',
+      desc: 'Each turn this card stays in your hand: +' + GOLD_PER_GILDED_PER_TURN +
+            'g (or +' + (GOLD_PER_GILDED_PER_TURN + 1) + 'g with The Patron joker). Stacks per Gilded card.',
+    },
+    glass: {
+      name: 'Glass',
+      tag: 'On reveal',
+      desc: 'When revealed by a Liar call, the Glass card and 2 random non-Steel cards in the pile burn (out of play for the rest of the round). The Witch character ignores the burn cap; otherwise hitting the cap recycles burned cards back into the draw pile. Iron Stomach relic restores burned run-deck cards as Steel.',
+    },
+    spiked: {
+      name: 'Spiked',
+      tag: 'On pickup',
+      desc: 'Whoever takes a pile containing Spiked cards draws +1 from the draw pile per Spiked card.',
+    },
+    cursed: {
+      name: 'Cursed',
+      tag: 'Passive (while held)',
+      desc: "You cannot call Liar while holding any Cursed card. Picking up a Cursed card locks it in your hand for 2 turns (1 with Steel Spine relic). Devil's Bargain and the Gambler character force Cursed into your hand.",
+    },
+    steel: {
+      name: 'Steel',
+      tag: 'Passive',
+      desc: 'Immune to Glass burns and most affix overwrites. Steel Jacks count DOUBLE toward the Jack curse. Dragon Scale relic: each Steel card in hand grants +1 Jack limit and +10% gold.',
+    },
+    mirage: {
+      name: 'Mirage',
+      tag: 'On play (one-time)',
+      desc: 'Treated as a wildcard — always matches the claimed Target Rank. After it resolves, it is removed from your run deck for the rest of the run.',
+    },
+    hollow: {
+      name: 'Hollow',
+      tag: 'On play',
+      desc: "You played it but your hand size doesn't drop — you immediately draw a replacement from the draw pile. Useful for stalling, dangerous if challenged.",
+    },
+    echo: {
+      name: 'Echo',
+      tag: 'On play',
+      desc: "After your Echo card hits the pile, the next player's first played card is briefly revealed to you privately (private read).",
+    },
+  };
+  document.querySelectorAll('button.beta-affix-legend').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-beta-affix');
+      const a = AFFIX_DETAILS[id];
+      if (!a) return;
+      showInfoModal(a.name, a.tag, a.desc);
+    });
+  });
+
+  // ============================================================
+  // Catalog browse modals (Jokers / Relics / Affixes / Consumables)
+  // ============================================================
+  // One reusable modal element. Each browse button rebuilds its body.
+  function _ensureCatalogModal() {
+    let modal = document.getElementById('betaCatalogModal');
+    if (modal) return modal;
+    modal = document.createElement('div');
+    modal.id = 'betaCatalogModal';
+    modal.className = 'hidden fixed inset-0 bg-black/80 backdrop-blur z-50 flex items-center justify-center p-4';
+    modal.innerHTML =
+      '<div class="bg-slate-800 border-2 border-purple-400 p-6 rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto scrollbar-thin">' +
+        '<div class="flex items-start justify-between mb-3 sticky top-0 bg-slate-800 pb-2">' +
+          '<div>' +
+            '<h3 id="betaCatalogTitle" class="text-xl font-bold"></h3>' +
+            '<p id="betaCatalogSubtitle" class="text-xs text-emerald-200"></p>' +
+          '</div>' +
+          '<button id="betaCatalogCloseBtn" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded-lg text-sm">Close</button>' +
+        '</div>' +
+        '<div id="betaCatalogBody" class="space-y-2"></div>' +
+      '</div>';
+    document.body.appendChild(modal);
+    modal.querySelector('#betaCatalogCloseBtn').addEventListener('click', () => modal.classList.add('hidden'));
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.add('hidden'); });
+    return modal;
+  }
+
+  // Pretty rarity badge color for jokers.
+  const _RARITY_TONE = {
+    Common:    'bg-gray-700 text-gray-100',
+    Uncommon:  'bg-emerald-700 text-emerald-100',
+    Rare:      'bg-blue-700 text-blue-100',
+    Legendary: 'bg-amber-700 text-amber-100',
+  };
+
+  function _openCatalog(kind) {
+    const modal = _ensureCatalogModal();
+    const titleEl = modal.querySelector('#betaCatalogTitle');
+    const subEl   = modal.querySelector('#betaCatalogSubtitle');
+    const body    = modal.querySelector('#betaCatalogBody');
+    body.innerHTML = '';
+    if (kind === 'jokers') {
+      titleEl.textContent = '\ud83c\udca0 Jokers';
+      const equipped = (runState && runState.jokers) ? runState.jokers.filter(j => j).map(j => j.id) : [];
+      subEl.textContent = 'Every joker in the game. ' + (equipped.length ? equipped.length + ' currently equipped — highlighted.' : '(none equipped right now)');
+      // Group by rarity for readability.
+      const ORDER = ['Common', 'Uncommon', 'Rare', 'Legendary'];
+      const byRarity = {};
+      for (const id of Object.keys(JOKER_CATALOG)) {
+        const j = JOKER_CATALOG[id];
+        const r = j.rarity || 'Common';
+        (byRarity[r] = byRarity[r] || []).push(j);
+      }
+      for (const rarity of ORDER) {
+        const arr = byRarity[rarity];
+        if (!arr || arr.length === 0) continue;
+        const header = document.createElement('div');
+        header.className = 'text-xs uppercase tracking-widest font-bold mt-2 mb-1 text-purple-300';
+        header.textContent = rarity + ' (' + arr.length + ')';
+        body.appendChild(header);
+        for (const j of arr) {
+          const isEq = equipped.includes(j.id);
+          const row = document.createElement('div');
+          row.className = 'rounded-lg p-3 border ' + (isEq
+            ? 'bg-fuchsia-900/40 border-fuchsia-400'
+            : 'bg-black/30 border-white/10');
+          const tone = _RARITY_TONE[rarity] || 'bg-gray-700 text-gray-100';
+          row.innerHTML =
+            '<div class="flex items-baseline gap-2 mb-1">' +
+              '<span class="font-bold">' + escapeHtml(j.name) + '</span>' +
+              '<span class="text-[10px] uppercase tracking-widest font-bold px-1.5 rounded ' + tone + '">' + escapeHtml(rarity) + '</span>' +
+              (isEq ? '<span class="text-[10px] uppercase tracking-widest font-bold px-1.5 rounded bg-fuchsia-500 text-white">Equipped</span>' : '') +
+              '<span class="ml-auto text-xs text-yellow-300">' + (j.price || 0) + 'g</span>' +
+            '</div>' +
+            '<div class="text-xs text-emerald-100">' + escapeHtml(j.desc) + '</div>';
+          body.appendChild(row);
+        }
+      }
+    } else if (kind === 'relics') {
+      titleEl.textContent = '\ud83d\udc51 Relics';
+      const owned = (runState && runState.relics) || [];
+      subEl.textContent = 'Every relic in the game. ' + owned.length + ' currently owned — highlighted.';
+      // Group by source: boss-pool entries first, then treasure/other.
+      const sources = {};
+      for (const bossId of Object.keys(BOSS_RELIC_POOL)) {
+        for (const id of BOSS_RELIC_POOL[bossId]) {
+          sources[id] = bossId;
+        }
+      }
+      const POOL_LABEL = { auditor: 'Auditor (Floor 3)', cheater: 'Cheater (Floor 6)', lugen: 'Lugen (Floor 9)' };
+      // Render boss pools first.
+      for (const bossId of ['auditor', 'cheater', 'lugen']) {
+        const ids = BOSS_RELIC_POOL[bossId] || [];
+        const header = document.createElement('div');
+        header.className = 'text-xs uppercase tracking-widest font-bold mt-2 mb-1 text-amber-300';
+        header.textContent = 'Boss reward — ' + (POOL_LABEL[bossId] || bossId);
+        body.appendChild(header);
+        for (const id of ids) {
+          const r = RELIC_CATALOG[id];
+          if (!r) continue;
+          body.appendChild(_relicRow(r, owned.includes(id)));
+        }
+      }
+      // Treasure / other (anything not in any boss pool).
+      const restIds = Object.keys(RELIC_CATALOG).filter(id => !sources[id]);
+      if (restIds.length > 0) {
+        const header = document.createElement('div');
+        header.className = 'text-xs uppercase tracking-widest font-bold mt-2 mb-1 text-amber-300';
+        header.textContent = 'Treasure pool / shop';
+        body.appendChild(header);
+        for (const id of restIds) {
+          body.appendChild(_relicRow(RELIC_CATALOG[id], owned.includes(id)));
+        }
+      }
+    } else if (kind === 'affixes') {
+      titleEl.textContent = '\u2728 Affixes';
+      subEl.textContent = 'How each affix triggers and what it does.';
+      const order = ['gilded', 'glass', 'spiked', 'cursed', 'steel', 'mirage', 'hollow', 'echo'];
+      for (const id of order) {
+        const a = AFFIX_DETAILS[id];
+        if (!a) continue;
+        const ringClass = affixRingClass(id);
+        const row = document.createElement('div');
+        row.className = 'rounded-lg p-3 border bg-black/30 border-white/10';
+        row.innerHTML =
+          '<div class="flex items-baseline gap-2 mb-1">' +
+            '<div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ' + (ringClass || '') + '" style="width:28px;height:38px;">A</div>' +
+            '<span class="font-bold text-base">' + escapeHtml(a.name) + '</span>' +
+            '<span class="text-[10px] uppercase tracking-widest font-bold px-1.5 rounded bg-cyan-700 text-cyan-100">' + escapeHtml(a.tag) + '</span>' +
+          '</div>' +
+          '<div class="text-xs text-emerald-100">' + escapeHtml(a.desc) + '</div>';
+        body.appendChild(row);
+      }
+    } else if (kind === 'consumables') {
+      titleEl.textContent = '\ud83c\udf81 Consumables';
+      subEl.textContent = 'Every consumable, what it does, and how many you currently own.';
+      const inv = (runState && runState.inventory) || {};
+      // Render in a stable order (catalog key order).
+      for (const id of Object.keys(CONSUMABLE_INFO)) {
+        const c = CONSUMABLE_INFO[id];
+        const count = inv[id] || 0;
+        const owned = count > 0;
+        const row = document.createElement('div');
+        row.className = 'rounded-lg p-3 border ' + (owned
+          ? 'bg-amber-900/40 border-amber-400'
+          : 'bg-black/30 border-white/10');
+        // Look up shop price if present.
+        const shopItem = SHOP_ITEMS.find(s => s.id === id);
+        const price = shopItem ? shopItem.price : null;
+        row.innerHTML =
+          '<div class="flex items-baseline gap-2 mb-1">' +
+            '<span class="font-bold">' + escapeHtml(c.name) + '</span>' +
+            (owned ? '<span class="text-[10px] uppercase tracking-widest font-bold px-1.5 rounded bg-amber-500 text-black">Owned ' + count + '</span>' : '') +
+            (price !== null ? '<span class="ml-auto text-xs text-yellow-300">' + price + 'g</span>' : '') +
+          '</div>' +
+          '<div class="text-xs text-emerald-100">' + escapeHtml(c.desc) + '</div>';
+        body.appendChild(row);
+      }
+    }
+    modal.classList.remove('hidden');
+  }
+  function _relicRow(r, ownedFlag) {
+    const row = document.createElement('div');
+    row.className = 'rounded-lg p-3 border ' + (ownedFlag
+      ? 'bg-amber-900/50 border-amber-300'
+      : 'bg-black/30 border-white/10');
+    row.innerHTML =
+      '<div class="flex items-baseline gap-2 mb-1">' +
+        '<span class="font-bold">' + escapeHtml(r.name) + '</span>' +
+        (ownedFlag ? '<span class="text-[10px] uppercase tracking-widest font-bold px-1.5 rounded bg-amber-400 text-black">Owned</span>' : '') +
+        '<span class="ml-auto text-xs text-yellow-300">' + (r.price || 0) + 'g</span>' +
+      '</div>' +
+      '<div class="text-xs text-emerald-100">' + escapeHtml(r.desc) + '</div>';
+    return row;
+  }
+
+  // Wire the four status-bar catalog buttons.
+  const _catJokers = document.getElementById('betaCatalogJokersBtn');
+  if (_catJokers) _catJokers.addEventListener('click', () => _openCatalog('jokers'));
+  const _catRelics = document.getElementById('betaCatalogRelicsBtn');
+  if (_catRelics) _catRelics.addEventListener('click', () => _openCatalog('relics'));
+  const _catAffixes = document.getElementById('betaCatalogAffixesBtn');
+  if (_catAffixes) _catAffixes.addEventListener('click', () => _openCatalog('affixes'));
+  const _catCons = document.getElementById('betaCatalogConsumablesBtn');
+  if (_catCons) _catCons.addEventListener('click', () => _openCatalog('consumables'));
+
   // Phase 6: resume/restart prompt when re-entering beta with an active run.
   function showResumeModal() {
     const modal = document.getElementById('betaResumeModal');

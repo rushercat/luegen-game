@@ -329,6 +329,10 @@
         <span class="text-yellow-300">&#128176; <span id="betaGold" class="font-bold">0</span>g</span>
         <span class="text-emerald-300 text-xs">&#128230; <span id="betaInventoryCount" class="font-bold">0</span></span>
         <button id="betaDeckInspectorBtn" title="Inspect every card in the game (and its affix)" class="bg-purple-700 hover:bg-purple-600 transition px-2 py-0.5 rounded text-xs font-bold">&#127183; Cards</button>
+        <button id="betaCatalogJokersBtn"      title="See every joker in the game"       class="bg-fuchsia-700 hover:bg-fuchsia-600 transition px-2 py-0.5 rounded text-xs font-bold">&#127183; Jokers</button>
+        <button id="betaCatalogRelicsBtn"      title="See every relic in the game"       class="bg-amber-700 hover:bg-amber-600 transition px-2 py-0.5 rounded text-xs font-bold">&#128081; Relics</button>
+        <button id="betaCatalogAffixesBtn"     title="See every affix and what it does"  class="bg-cyan-700 hover:bg-cyan-600 transition px-2 py-0.5 rounded text-xs font-bold">&#10024; Affixes</button>
+        <button id="betaCatalogConsumablesBtn" title="See every consumable in the game"  class="bg-emerald-700 hover:bg-emerald-600 transition px-2 py-0.5 rounded text-xs font-bold">&#127881; Consumables</button>
       </div>
       <div id="betaRoundScore" class="text-xs sm:text-sm">Round score: &mdash;</div>
       <div id="betaHearts" class="text-red-400 text-lg tracking-wider">&hearts;&hearts;&hearts;</div>
@@ -607,16 +611,16 @@
       </div>
 
       <div class="mb-2">
-        <h4 class="text-sm font-bold text-pink-200 mb-1">Affix legend</h4>
+        <h4 class="text-sm font-bold text-pink-200 mb-1">Affix legend <span class="text-white/50 font-normal">(click for details)</span></h4>
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-          <div class="flex items-center gap-2"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-yellow-400" style="width:32px;height:44px;">A</div><span>Gilded</span></div>
-          <div class="flex items-center gap-2"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-cyan-400" style="width:32px;height:44px;">A</div><span>Glass</span></div>
-          <div class="flex items-center gap-2"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-red-400" style="width:32px;height:44px;">A</div><span>Spiked</span></div>
-          <div class="flex items-center gap-2"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-purple-500" style="width:32px;height:44px;">A</div><span>Cursed</span></div>
-          <div class="flex items-center gap-2"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-gray-300" style="width:32px;height:44px;">A</div><span>Steel</span></div>
-          <div class="flex items-center gap-2"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-pink-400" style="width:32px;height:44px;">A</div><span>Mirage</span></div>
-          <div class="flex items-center gap-2"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-indigo-400" style="width:32px;height:44px;">A</div><span>Hollow</span></div>
-          <div class="flex items-center gap-2"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-fuchsia-400" style="width:32px;height:44px;">A</div><span>Echo</span></div>
+          <button data-beta-affix="gilded" class="beta-affix-legend flex items-center gap-2 text-left px-1 py-1 rounded hover:bg-white/10 cursor-pointer transition"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-yellow-400" style="width:32px;height:44px;">A</div><span>Gilded</span></button>
+          <button data-beta-affix="glass" class="beta-affix-legend flex items-center gap-2 text-left px-1 py-1 rounded hover:bg-white/10 cursor-pointer transition"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-cyan-400" style="width:32px;height:44px;">A</div><span>Glass</span></button>
+          <button data-beta-affix="spiked" class="beta-affix-legend flex items-center gap-2 text-left px-1 py-1 rounded hover:bg-white/10 cursor-pointer transition"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-red-400" style="width:32px;height:44px;">A</div><span>Spiked</span></button>
+          <button data-beta-affix="cursed" class="beta-affix-legend flex items-center gap-2 text-left px-1 py-1 rounded hover:bg-white/10 cursor-pointer transition"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-purple-500" style="width:32px;height:44px;">A</div><span>Cursed</span></button>
+          <button data-beta-affix="steel" class="beta-affix-legend flex items-center gap-2 text-left px-1 py-1 rounded hover:bg-white/10 cursor-pointer transition"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-gray-300" style="width:32px;height:44px;">A</div><span>Steel</span></button>
+          <button data-beta-affix="mirage" class="beta-affix-legend flex items-center gap-2 text-left px-1 py-1 rounded hover:bg-white/10 cursor-pointer transition"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-pink-400" style="width:32px;height:44px;">A</div><span>Mirage</span></button>
+          <button data-beta-affix="hollow" class="beta-affix-legend flex items-center gap-2 text-left px-1 py-1 rounded hover:bg-white/10 cursor-pointer transition"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-indigo-400" style="width:32px;height:44px;">A</div><span>Hollow</span></button>
+          <button data-beta-affix="echo" class="beta-affix-legend flex items-center gap-2 text-left px-1 py-1 rounded hover:bg-white/10 cursor-pointer transition"><div class="card card-face flex items-center justify-center text-base font-bold text-black rounded ring-2 ring-fuchsia-400" style="width:32px;height:44px;">A</div><span>Echo</span></button>
         </div>
       </div>
     </div>
