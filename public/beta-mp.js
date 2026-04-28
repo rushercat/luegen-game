@@ -469,14 +469,18 @@
           '<span class="' + tone + '">' + pct + '%</span> chance someone holds a ' + escapeHtml(r.target);
       }
     }
-    // Tattletale button
+    // Tattletale button — explicit "charge"/"charges" label so the (N) is
+    // unambiguous (was confusable with the modal's seconds countdown).
     const ttBtn = document.getElementById('betaMpTattletaleBtn');
     if (ttBtn) {
       const charges = (s.mine && s.mine.tattletaleCharges) || 0;
       const hasJoker = (s.mine && s.mine.jokers && s.mine.jokers.some(j => j && j.id === 'tattletale'));
       ttBtn.classList.toggle('hidden', !hasJoker);
       ttBtn.disabled = charges <= 0;
-      ttBtn.innerHTML = '&#128064; Tattletale (' + charges + ')';
+      ttBtn.title = 'Pick a player; you see their full hand for 4 seconds. ' +
+                    'Once per floor (Ascend tiers add charges).';
+      ttBtn.innerHTML = '&#128064; Tattletale (' + charges + ' ' +
+                        (charges === 1 ? 'charge' : 'charges') + ')';
     }
     // Loaded Die button
     const ldBtn = document.getElementById('betaMpLoadedDieBtn');
@@ -564,15 +568,7 @@
         } else if (peek.kind === 'echo') {
           alert("Echo's eye — " + peek.payload.player + "'s first card: " + peek.payload.rank + (peek.payload.affix ? ' (' + peek.payload.affix + ')' : ''));
         } else if (peek.kind === 'tracerPeek') {
-          // Show top-3 cards, prompt for new order
-          const tops = peek.payload.topCards || [];
-          const tag = (c, i) => i + ': ' + c.rank + (c.affix ? ' [' + c.affix + ']' : '');
-          const labels = tops.map((c, i) => tag(c, i)).join('\n');
-          const order = prompt('Tracer — top of draw pile (TOP first):\n' + labels + '\n\nEnter NEW order as comma-separated indices (top first), e.g. "0,1,2" to keep, "2,1,0" to flip:');
-          if (!order) return;
-          const perm = order.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !Number.isNaN(n));
-          if (perm.length === 0) return;
-          socket.emit('beta:useConsumable', { itemId: 'tracer', options: { perm } });
+          _showTracerReorder(peek.payload.topCards || []);
         }
       }
     }
@@ -604,6 +600,81 @@
       return;
     }
     socket.emit('beta:useConsumable', { itemId });
+  }
+
+  // 6.6 — Tracer reorder UI. The user sees the top N cards face-up and
+  // builds a new top-first order by clicking cards in the desired sequence.
+  // Cancellable; "Keep order" sends the original [0,1,2,…] permutation.
+  function _showTracerReorder(topCards) {
+    if (!topCards || topCards.length === 0) return;
+    let modal = document.getElementById('betaMpTracerModal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'betaMpTracerModal';
+      modal.className = 'fixed inset-0 bg-black/80 backdrop-blur z-50 flex items-center justify-center p-4';
+      document.body.appendChild(modal);
+      modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.add('hidden'); });
+    }
+    // pickedOrder is a list of original indices in the order the user clicked.
+    let pickedOrder = [];
+    function _renderInner() {
+      const remaining = topCards.map((_, i) => i).filter(i => !pickedOrder.includes(i));
+      const cardTile = (c, idx, picked, disabled) => {
+        const ring = affixRingClass(c.affix);
+        const cls = 'card card-face flex items-center justify-center text-xl font-bold text-black rounded ' +
+                    (ring || '') + (picked ? ' opacity-50' : '') + (disabled ? '' : ' cursor-pointer hover:scale-105');
+        return '<button data-idx="' + idx + '" data-picked="' + (picked ? '1' : '0') +
+               '" class="' + cls + '" style="width:48px;height:64px;margin:4px;display:inline-flex;" ' +
+               (disabled ? 'disabled' : '') + ' title="' +
+               (c.affix ? 'Affix: ' + c.affix : 'plain') + '">' +
+               escapeHtml(c.rank) + '</button>';
+      };
+      const top3 = topCards.map((c, i) => cardTile(c, i, pickedOrder.includes(i), pickedOrder.includes(i))).join('');
+      const orderedDisplay = pickedOrder.length === 0
+        ? '<i class="text-white/40">click a card to set it as the new top</i>'
+        : pickedOrder.map((origIdx, slot) =>
+            '<div class="inline-flex flex-col items-center mx-1">' +
+              '<span class="text-[10px] text-emerald-300">#' + (slot + 1) + (slot === 0 ? ' (TOP)' : '') + '</span>' +
+              cardTile(topCards[origIdx], origIdx, false, true) +
+            '</div>').join('');
+      modal.innerHTML =
+        '<div class="bg-slate-800 border-2 border-cyan-400 p-6 rounded-2xl shadow-2xl max-w-md w-full">' +
+          '<h3 class="text-xl font-extrabold mb-1">&#128270; Tracer</h3>' +
+          '<p class="text-xs text-emerald-200 mb-3">Click cards in the order you want them on TOP of the draw pile (left = top).</p>' +
+          '<div class="bg-black/30 p-2 rounded mb-2"><div class="text-[10px] uppercase tracking-widest text-cyan-200 mb-1">Top cards (originals)</div>' + top3 + '</div>' +
+          '<div class="bg-black/30 p-2 rounded mb-3"><div class="text-[10px] uppercase tracking-widest text-emerald-200 mb-1">New order</div>' + orderedDisplay + '</div>' +
+          '<div class="flex gap-2 justify-end">' +
+            '<button id="tracerReset" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded text-sm">Reset</button>' +
+            '<button id="tracerKeep" class="bg-emerald-700 hover:bg-emerald-600 px-3 py-1 rounded text-sm">Keep current order</button>' +
+            '<button id="tracerCancel" class="bg-rose-700 hover:bg-rose-600 px-3 py-1 rounded text-sm">Cancel</button>' +
+            '<button id="tracerApply" class="bg-yellow-500 hover:bg-yellow-400 text-black font-bold px-3 py-1 rounded text-sm" ' +
+              (pickedOrder.length === topCards.length ? '' : 'disabled') + '>Apply</button>' +
+          '</div>' +
+        '</div>';
+      modal.querySelectorAll('button[data-idx]').forEach(btn => {
+        if (btn.disabled) return;
+        btn.addEventListener('click', () => {
+          const i = parseInt(btn.dataset.idx, 10);
+          if (Number.isNaN(i)) return;
+          if (!pickedOrder.includes(i)) pickedOrder.push(i);
+          _renderInner();
+        });
+      });
+      modal.querySelector('#tracerReset').addEventListener('click', () => { pickedOrder = []; _renderInner(); });
+      modal.querySelector('#tracerCancel').addEventListener('click', () => { modal.classList.add('hidden'); });
+      modal.querySelector('#tracerKeep').addEventListener('click', () => {
+        const keep = topCards.map((_, i) => i);
+        socket.emit('beta:useConsumable', { itemId: 'tracer', options: { perm: keep } });
+        modal.classList.add('hidden');
+      });
+      modal.querySelector('#tracerApply').addEventListener('click', () => {
+        if (pickedOrder.length !== topCards.length) return;
+        socket.emit('beta:useConsumable', { itemId: 'tracer', options: { perm: pickedOrder.slice() } });
+        modal.classList.add('hidden');
+      });
+    }
+    _renderInner();
+    modal.classList.remove('hidden');
   }
 
   function showTattletaleModal(targetName, cards, ms) {
@@ -666,9 +737,9 @@
     let html =
       '<div class="flex items-baseline justify-between mb-2 gap-2 flex-wrap">' +
         '<h3 class="text-xl font-bold">Floor ' + offer.nextFloor + ' approaches</h3>' +
-        // Run seed pill — visible at every fork, shareable to replay the run.
+        // Run seed pill — click-to-copy now (was static <code>).
         (s.seed
-          ? '<span class="text-[11px] text-white/60" title="Run seed — share to replay this exact run">Seed: <code class="bg-black/40 px-1 rounded">' + escapeHtml(s.seed) + '</code></span>'
+          ? '<button id="betaMpForkSeedPill" type="button" class="text-[11px] text-white/60 hover:text-white transition cursor-pointer" title="Click to copy run seed (shareable to replay this exact run)">Seed: <code class="bg-black/40 px-1 rounded">' + escapeHtml(s.seed) + '</code></button>'
           : '') +
       '</div>' +
       (offer.nextFloorIsBoss && offer.nextBoss
@@ -766,6 +837,21 @@
         socket.emit('beta:pickFork', { choice: btn.dataset.fork });
       });
     });
+    // 7 — Click-to-copy seed pill in fork. Tries Clipboard API; falls
+    // back to a window.prompt with the value selectable for manual copy.
+    const seedPill = document.getElementById('betaMpForkSeedPill');
+    if (seedPill && s.seed) {
+      seedPill.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(s.seed);
+          const orig = seedPill.innerHTML;
+          seedPill.innerHTML = '<span class="text-emerald-300">Copied!</span>';
+          setTimeout(() => { seedPill.innerHTML = orig; }, 1200);
+        } catch (e) {
+          window.prompt('Copy this seed:', s.seed);
+        }
+      });
+    }
     const cont = document.getElementById('betaMpContinueForkBtn');
     if (cont) cont.addEventListener('click', () => socket.emit('beta:continueFork'));
     if (isShopBrowsing) renderShopList();
@@ -1163,6 +1249,28 @@
       burnEl.textContent = cnt + '/' + cap;
       burnEl.style.color = cnt >= cap - 1 ? '#fb923c' : '#67e8f9';
     }
+    // 7 — Burn-pile face visualization. Renders the cards burned this
+    // ROUND as small tiles (the per-floor counter still shows "X/8" via
+    // burnEl above; faces are scoped to the current round because cards
+    // return to owners on round end).
+    const burnFaces = document.getElementById('betaMpBurnFaces');
+    if (burnFaces) {
+      const faces = (s.burnedFaces || []);
+      if (faces.length === 0) {
+        burnFaces.classList.add('hidden');
+        burnFaces.innerHTML = '';
+      } else {
+        burnFaces.classList.remove('hidden');
+        burnFaces.innerHTML = '<span class="text-[10px] uppercase tracking-widest text-cyan-200/70 mr-1">Burned this round:</span>' +
+          faces.map(c => {
+            const ring = affixRingClass(c.affix);
+            const cls = 'inline-block card card-face flex items-center justify-center font-bold text-black rounded ' +
+                        (ring || '');
+            return '<span class="' + cls + '" style="width:22px;height:30px;font-size:11px;margin:1px;display:inline-flex;" title="' +
+                   (c.affix ? 'Affix: ' + escapeHtml(c.affix) : 'plain') + '">' + escapeHtml(c.rank) + '</span>';
+          }).join('');
+      }
+    }
 
     // Players row
     const playersEl = document.getElementById('betaMpPlayers');
@@ -1332,6 +1440,38 @@
         specEl.innerHTML = '';
       }
     }
+    // 7 — Challenge timer bar (PvP). Drives off s.challengeDeadline. Solo
+    // had this; PvP players were left mentally counting. Cleared when the
+    // window closes; ticks at ~10fps via a single setInterval keyed off
+    // window._lugenMpChallengeTickerInstalled so we don't stack timers.
+    const cbar = document.getElementById('betaMpChallengeBar');
+    const cfill = document.getElementById('betaMpChallengeBarFill');
+    if (cbar && cfill) {
+      if (s.challengeOpen && typeof s.challengeDeadline === 'number') {
+        cbar.classList.remove('hidden');
+        const totalMs = Math.max(500, s.challengeDeadline - Date.now()); // assume current remaining = total at first paint
+        cfill.dataset.deadline = String(s.challengeDeadline);
+        cfill.dataset.total = String(totalMs);
+        if (!window._lugenMpChallengeTickerInstalled) {
+          window._lugenMpChallengeTickerInstalled = true;
+          setInterval(() => {
+            const f = document.getElementById('betaMpChallengeBarFill');
+            const b = document.getElementById('betaMpChallengeBar');
+            if (!f || !b) return;
+            if (b.classList.contains('hidden')) return;
+            const dl = +(f.dataset.deadline || 0);
+            const tot = +(f.dataset.total || 1);
+            const remaining = Math.max(0, dl - Date.now());
+            const pct = Math.max(0, Math.min(100, (remaining / tot) * 100));
+            f.style.width = pct + '%';
+          }, 80);
+        }
+      } else {
+        cbar.classList.add('hidden');
+        cfill.style.width = '100%';
+      }
+    }
+
     // Status text
     const statusEl = document.getElementById('betaMpStatus');
     if (statusEl) {
@@ -1391,6 +1531,17 @@
     if (admPanel) {
       if (s.hostId === myPlayerId) admPanel.classList.remove('hidden');
       else admPanel.classList.add('hidden');
+      // Populate the run-deck card dropdown for the apply-affix cheat.
+      const sel = document.getElementById('betaMpAdmAffixCardSel');
+      if (sel && s.mine && s.mine.runDeck) {
+        const prev = sel.value;
+        sel.innerHTML = s.mine.runDeck.map(c =>
+          '<option value="' + escapeHtml(c.id) + '">' +
+          escapeHtml(c.rank) + (c.affix ? ' [' + c.affix + ']' : ' (plain)') +
+          '</option>').join('');
+        // Restore previous selection if still valid.
+        if (prev && Array.from(sel.options).some(o => o.value === prev)) sel.value = prev;
+      }
     }
   }
 
@@ -1410,7 +1561,42 @@
       const seedShareUrl = seed
         ? location.origin + location.pathname + '?seed=' + encodeURIComponent(seed) + '#beta'
         : null;
-      let html = lastState.players.map(p =>
+      // 5.12 — Run-end story. Three short paragraphs spliced from the
+      // room log + final state. The log is what the server kept; we pull
+      // the lines that describe key beats (jack curse, glass spam, big
+      // pickups, boss clears, last stand, ascensions earned).
+      const log = lastState.log || [];
+      const me = lastState.players.find(p => p.id === myPlayerId) || {};
+      function _pickHighlights(predicate, n) {
+        const out = [];
+        for (const l of log) { if (predicate(l)) out.push(l); if (out.length >= n) break; }
+        return out;
+      }
+      const myName = me.name || 'You';
+      const myEvents = log.filter(l => l.indexOf(myName) === 0).slice(-12);
+      const bossLines = _pickHighlights(l => /Boss floor|cleared|defeated/i.test(l), 3);
+      const dramaLines = _pickHighlights(l =>
+        /Jack curse|Glass: burned|Last Stand|Spiked Trap|Caller's Mark|forfeited|Lugen|Vengeful/i.test(l), 3);
+      const para1 = `Floor ${lastState.currentFloor} of ${lastState.totalFloors || 9}. ` +
+        (iWon
+          ? `You ended the run as the last bluffer standing — ♥${me.hearts}, ${me.gold}g, deck of ${me.runDeckCount || (me.runDeckCount === 0 ? 0 : '?')} cards.`
+          : (winnerName
+              ? `${escapeHtml(winnerName)} took the win. You ended at ♥${me.hearts}, ${me.gold}g.`
+              : `The whole table flamed out — nobody made it.`));
+      const para2 = bossLines.length > 0
+        ? 'Highlights: ' + bossLines.map(escapeHtml).join(' · ')
+        : 'No boss clears this run — the road home stayed unfinished.';
+      const para3 = dramaLines.length > 0
+        ? 'Drama: ' + dramaLines.map(escapeHtml).join(' · ')
+        : 'A tactical, low-drama run — the math stayed clean.';
+      let html =
+        '<div class="bg-black/30 p-3 rounded text-left mb-3">' +
+          '<div class="text-[10px] uppercase tracking-widest text-emerald-200/70 mb-1">Run story</div>' +
+          '<p class="mb-1">' + escapeHtml(para1) + '</p>' +
+          '<p class="text-white/70 mb-1">' + para2 + '</p>' +
+          '<p class="text-white/70">' + para3 + '</p>' +
+        '</div>';
+      html += lastState.players.map(p =>
         '<div>' + escapeHtml(p.name) + ' — Floor ' + lastState.currentFloor +
         ' (♥' + p.hearts + ', ' + p.gold + 'g)</div>'
       ).join('');
@@ -1705,6 +1891,13 @@
     // Loaded Die
     const ldBtn = document.getElementById('betaMpLoadedDieBtn');
     if (ldBtn) ldBtn.addEventListener('click', () => socket && socket.emit('beta:useLoadedDie'));
+    // 5.11 — Forfeit. Confirm before firing so a misclick doesn't end the run.
+    const forfeitBtn = document.getElementById('betaMpForfeitBtn');
+    if (forfeitBtn) forfeitBtn.addEventListener('click', () => {
+      if (!socket) return;
+      if (!confirm('Concede this run? You\'ll be eliminated and the run continues for the others.')) return;
+      socket.emit('beta:forfeit');
+    });
     // Doubletalk + Sleight of Hand active jokers
     const dtBtn = document.getElementById('betaMpDoubletalkBtn');
     if (dtBtn) dtBtn.addEventListener('click', () => socket && socket.emit('beta:useDoubletalk'));
@@ -1743,6 +1936,44 @@
       if (!socket) return;
       const v = parseInt(document.getElementById('betaMpAdmFloorInput').value, 10) || 1;
       socket.emit('beta:adminSkipFloor', { floor: v });
+    });
+
+    // Extended admin cheats (joker / relic / consumable / affix / phase)
+    const admJokerBtn = document.getElementById('betaMpAdmJokerBtn');
+    if (admJokerBtn) admJokerBtn.addEventListener('click', () => {
+      if (!socket) return;
+      const v = (document.getElementById('betaMpAdmJokerInput').value || '').trim();
+      if (!v) return;
+      socket.emit('beta:adminGiveJoker', { jokerId: v });
+    });
+    const admRelicBtn = document.getElementById('betaMpAdmRelicBtn');
+    if (admRelicBtn) admRelicBtn.addEventListener('click', () => {
+      if (!socket) return;
+      const v = (document.getElementById('betaMpAdmRelicInput').value || '').trim();
+      if (!v) return;
+      socket.emit('beta:adminGiveRelic', { relicId: v });
+    });
+    const admConsBtn = document.getElementById('betaMpAdmConsBtn');
+    if (admConsBtn) admConsBtn.addEventListener('click', () => {
+      if (!socket) return;
+      const v = (document.getElementById('betaMpAdmConsInput').value || '').trim();
+      const n = parseInt(document.getElementById('betaMpAdmConsCount').value, 10) || 1;
+      if (!v) return;
+      socket.emit('beta:adminGiveConsumable', { itemId: v, count: n });
+    });
+    const admPhaseBtn = document.getElementById('betaMpAdmPhaseBtn');
+    if (admPhaseBtn) admPhaseBtn.addEventListener('click', () => {
+      if (!socket) return;
+      const v = document.getElementById('betaMpAdmPhaseSel').value;
+      socket.emit('beta:adminGotoPhase', { which: v });
+    });
+    const admAffixBtn = document.getElementById('betaMpAdmAffixBtn');
+    if (admAffixBtn) admAffixBtn.addEventListener('click', () => {
+      if (!socket) return;
+      const cardId = document.getElementById('betaMpAdmAffixCardSel').value;
+      const affix = document.getElementById('betaMpAdmAffixSel').value || null;
+      if (!cardId) return;
+      socket.emit('beta:adminApplyAffix', { cardId, affix });
     });
 
     const resultBackBtn = document.getElementById('betaMpResultBackBtn');

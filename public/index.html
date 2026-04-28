@@ -724,9 +724,13 @@
         <button data-mp-catalog="achievements" title="See your achievements + progress" class="bg-yellow-700 hover:bg-yellow-600 transition px-2 py-0.5 rounded text-xs font-bold">&#127942; Achievements</button>
       </div>
       <div id="betaMpStatus" class="text-emerald-200"></div>
+      <button id="betaMpForfeitBtn" class="bg-rose-700 hover:bg-rose-600 px-3 py-1 rounded text-xs transition" title="Concede the run. Run continues for the others.">&#127987; Forfeit</button>
       <button id="betaMpLeaveBtn2" class="bg-rose-600 hover:bg-rose-500 px-3 py-1 rounded text-xs transition" onclick="document.getElementById('betaMpLeaveBtn').click()">Leave</button>
     </div>
     <div id="betaMpSpectator" class="hidden bg-amber-900/30 border border-amber-400/40 p-3 rounded-lg mb-2 text-sm"></div>
+    <div id="betaMpChallengeBar" class="hidden bg-black/40 rounded-full overflow-hidden mb-2" style="height:8px;">
+      <div id="betaMpChallengeBarFill" class="bg-rose-500 transition-all" style="width:100%;height:100%;"></div>
+    </div>
     <div id="betaMpJokerRow" class="flex flex-wrap items-center gap-2 bg-black/30 px-3 py-1.5 rounded-lg mb-2 text-xs">
       <span class="text-purple-300 font-bold mr-1">Jokers:</span>
       <span id="betaMpJokerCapBadge" class="text-[10px] uppercase tracking-widest text-purple-200/70 mr-1">0 / 5</span>
@@ -747,6 +751,7 @@
       <div class="text-xs uppercase tracking-widest text-yellow-300">Target rank</div>
       <div id="betaMpTarget" class="text-7xl font-extrabold my-2">&mdash;</div>
       <div class="text-sm text-emerald-200">Pile: <span id="betaMpPileSize" class="font-bold">0</span> &middot; Draw: <span id="betaMpDrawSize" class="font-bold">0</span> &middot; Burned: <span id="betaMpBurnCounter" class="font-bold text-cyan-300">0/8</span></div>
+      <div id="betaMpBurnFaces" class="hidden mt-2 text-xs"></div>
       <div id="betaMpLastPlay" class="mt-2 text-yellow-200 text-sm min-h-[1.25rem]"></div>
     </div>
     <div id="betaMpHand" class="flex flex-wrap gap-2 justify-center mb-4"></div>
@@ -773,6 +778,46 @@
           <input id="betaMpAdmFloorInput" type="number" min="1" max="9" value="2" class="w-16 px-2 py-1 rounded bg-black/40 border border-white/10" />
           <button id="betaMpAdmFloorBtn" class="bg-blue-600 hover:bg-blue-500 px-2 py-1 rounded font-bold">Skip to floor</button>
         </div>
+      </div>
+      <div class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <div class="flex items-center gap-1">
+          <input id="betaMpAdmJokerInput" type="text" placeholder="joker id (e.g. surveyor)" class="flex-1 px-2 py-1 rounded bg-black/40 border border-white/10 text-[11px]" />
+          <button id="betaMpAdmJokerBtn" class="bg-purple-600 hover:bg-purple-500 px-2 py-1 rounded font-bold">+joker</button>
+        </div>
+        <div class="flex items-center gap-1">
+          <input id="betaMpAdmRelicInput" type="text" placeholder="relic id (e.g. ledger)" class="flex-1 px-2 py-1 rounded bg-black/40 border border-white/10 text-[11px]" />
+          <button id="betaMpAdmRelicBtn" class="bg-pink-600 hover:bg-pink-500 px-2 py-1 rounded font-bold">+relic</button>
+        </div>
+        <div class="flex items-center gap-1">
+          <input id="betaMpAdmConsInput" type="text" placeholder="consumable id (e.g. tracer)" class="flex-1 px-2 py-1 rounded bg-black/40 border border-white/10 text-[11px]" />
+          <input id="betaMpAdmConsCount" type="number" value="1" min="1" max="3" class="w-12 px-2 py-1 rounded bg-black/40 border border-white/10" />
+          <button id="betaMpAdmConsBtn" class="bg-amber-600 hover:bg-amber-500 px-2 py-1 rounded font-bold">+cons</button>
+        </div>
+        <div class="flex items-center gap-1">
+          <select id="betaMpAdmPhaseSel" class="flex-1 px-2 py-1 rounded bg-black/40 border border-white/10 text-[11px]">
+            <option value="shop">Shop</option>
+            <option value="reward">Reward</option>
+            <option value="event">Event</option>
+            <option value="cleanse">Cleanse</option>
+            <option value="treasure">Treasure</option>
+          </select>
+          <button id="betaMpAdmPhaseBtn" class="bg-emerald-600 hover:bg-emerald-500 px-2 py-1 rounded font-bold">Goto phase</button>
+        </div>
+      </div>
+      <div class="mt-3 flex items-center gap-1">
+        <select id="betaMpAdmAffixCardSel" class="flex-1 px-2 py-1 rounded bg-black/40 border border-white/10 text-[11px]"></select>
+        <select id="betaMpAdmAffixSel" class="px-2 py-1 rounded bg-black/40 border border-white/10 text-[11px]">
+          <option value="">(strip)</option>
+          <option value="gilded">gilded</option>
+          <option value="glass">glass</option>
+          <option value="spiked">spiked</option>
+          <option value="cursed">cursed</option>
+          <option value="steel">steel</option>
+          <option value="mirage">mirage</option>
+          <option value="hollow">hollow</option>
+          <option value="echo">echo</option>
+        </select>
+        <button id="betaMpAdmAffixBtn" class="bg-cyan-600 hover:bg-cyan-500 px-2 py-1 rounded font-bold">Apply affix</button>
       </div>
     </details>
   </div>

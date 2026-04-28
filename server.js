@@ -749,6 +749,11 @@ io.on('connection', async (socket) => {
       case 'discardFourOfKind': return { capacity: 3,  refillPerSec: 0.5 };
       case 'createRoom':        return { capacity: 3,  refillPerSec: 0.1 };   // 3 then 1/10s
       case 'joinRoom':          return { capacity: 8,  refillPerSec: 0.5 };   // brute-force pad
+      // 6.7 — generous bucket shared across all beta:* events. Protects
+      // the event loop from a malicious client spamming any beta socket
+      // handler, without making normal play feel slow. ~30 events/sec
+      // sustained, with a 60-token burst.
+      case 'betaEvent':         return { capacity: 60, refillPerSec: 30 };
       default:                  return { capacity: 10, refillPerSec: 5 };
     }
   }
@@ -1305,6 +1310,21 @@ io.on('connection', async (socket) => {
 
   function emitBetaError(message) { socket.emit('beta:error', { message }); }
 
+  // 6.7 — Rate limit ALL beta:* events on this socket via the shared
+  // 'betaEvent' bucket. socket.use is socket.io's per-packet middleware:
+  // we inspect packet[0] (the event name) and either pass or short-circuit
+  // with a soft error.
+  socket.use((packet, next) => {
+    const eventName = Array.isArray(packet) ? packet[0] : null;
+    if (typeof eventName === 'string' && eventName.startsWith('beta:')) {
+      if (!rateLimit('betaEvent')) {
+        emitBetaError('Slow down — too many actions per second.');
+        return; // do NOT call next() — drop the packet
+      }
+    }
+    next();
+  });
+
   // 5.8 — Hydrate the player object with their joker-ascension tiers from
   // the auth backend. Best-effort: if lookup fails or auth disabled, the
   // player just plays at tier 0 across the board.
@@ -1609,6 +1629,17 @@ io.on('connection', async (socket) => {
     betaMP.broadcast(io, room);
   });
 
+  // 5.11 — Forfeit the run (drop hearts to 0, eliminate this player).
+  socket.on('beta:forfeit', () => {
+    const room = betaMP.betaRooms[currentBetaRoomId];
+    if (!room) return emitBetaError('Not in a beta room.');
+    const player = betaMP.findPlayerBySocket(room, socket.id);
+    if (!player) return emitBetaError('Not in a beta room.');
+    const r = betaMP.forfeitRun(room, player.id);
+    if (r.error) return emitBetaError(r.error);
+    betaMP.broadcast(io, room);
+  });
+
   socket.on('beta:adminAddGold', ({ amount } = {}) => {
     const room = betaMP.betaRooms[currentBetaRoomId];
     if (!room) return emitBetaError('Not in a beta room.');
@@ -1635,6 +1666,53 @@ io.on('connection', async (socket) => {
     const player = betaMP.findPlayerBySocket(room, socket.id);
     if (!player) return emitBetaError('Not in a beta room.');
     const r = betaMP.adminSkipFloor(room, player.id, floor);
+    if (r.error) return emitBetaError(r.error);
+    betaMP.broadcast(io, room);
+  });
+
+  // New admin cheats — joker/relic/consumable/affix/phase. All host-only.
+  socket.on('beta:adminGiveJoker', ({ jokerId } = {}) => {
+    const room = betaMP.betaRooms[currentBetaRoomId];
+    if (!room) return emitBetaError('Not in a beta room.');
+    const player = betaMP.findPlayerBySocket(room, socket.id);
+    if (!player) return emitBetaError('Not in a beta room.');
+    const r = betaMP.adminGiveJoker(room, player.id, jokerId);
+    if (r.error) return emitBetaError(r.error);
+    betaMP.broadcast(io, room);
+  });
+  socket.on('beta:adminGiveRelic', ({ relicId } = {}) => {
+    const room = betaMP.betaRooms[currentBetaRoomId];
+    if (!room) return emitBetaError('Not in a beta room.');
+    const player = betaMP.findPlayerBySocket(room, socket.id);
+    if (!player) return emitBetaError('Not in a beta room.');
+    const r = betaMP.adminGiveRelic(room, player.id, relicId);
+    if (r.error) return emitBetaError(r.error);
+    betaMP.broadcast(io, room);
+  });
+  socket.on('beta:adminGiveConsumable', ({ itemId, count } = {}) => {
+    const room = betaMP.betaRooms[currentBetaRoomId];
+    if (!room) return emitBetaError('Not in a beta room.');
+    const player = betaMP.findPlayerBySocket(room, socket.id);
+    if (!player) return emitBetaError('Not in a beta room.');
+    const r = betaMP.adminGiveConsumable(room, player.id, itemId, count);
+    if (r.error) return emitBetaError(r.error);
+    betaMP.broadcast(io, room);
+  });
+  socket.on('beta:adminApplyAffix', ({ cardId, affix } = {}) => {
+    const room = betaMP.betaRooms[currentBetaRoomId];
+    if (!room) return emitBetaError('Not in a beta room.');
+    const player = betaMP.findPlayerBySocket(room, socket.id);
+    if (!player) return emitBetaError('Not in a beta room.');
+    const r = betaMP.adminApplyAffix(room, player.id, cardId, affix);
+    if (r.error) return emitBetaError(r.error);
+    betaMP.broadcast(io, room);
+  });
+  socket.on('beta:adminGotoPhase', ({ which } = {}) => {
+    const room = betaMP.betaRooms[currentBetaRoomId];
+    if (!room) return emitBetaError('Not in a beta room.');
+    const player = betaMP.findPlayerBySocket(room, socket.id);
+    if (!player) return emitBetaError('Not in a beta room.');
+    const r = betaMP.adminGotoPhase(room, player.id, which);
     if (r.error) return emitBetaError(r.error);
     betaMP.broadcast(io, room);
   });
