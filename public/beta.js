@@ -352,6 +352,7 @@
     sticky:   { id: 'sticky',   name: 'Sticky',   desc: 'Once a card is revealed, it stays face-up in the pile area for the rest of the round.' },
     rapid:    { id: 'rapid',    name: 'Rapid',    desc: 'Challenge windows are 2 seconds for everyone.' },
     richFolk: { id: 'richFolk', name: 'Rich Folk', desc: 'Gold rewards halved, but joker prices in the shop are 50% off.' },
+    lastCall: { id: 'lastCall', name: 'Last Call', desc: 'Each player gets 5 plays per round. Whoever has the most cards left when everyone runs out loses 30% of their gold.' },
   };
 
   // Phase 8+: AI bot personalities — each teaches a different kind of read
@@ -422,6 +423,7 @@
   const TREASURE_POOL = [
     'hourglass', 'seersEye', 'crackedMirror', 'dragonScale',
     'cowardsCloak', 'steelSpine', 'stackedDeck', 'mogul',
+    'brassRing',
   ];
   const RELIC_CATALOG = {
     crackedCoin: { id: 'crackedCoin', name: 'Cracked Coin', price: 200, desc: 'Each round start: gain 5g × Hearts remaining.' },
@@ -441,12 +443,15 @@
     steelSpine:   { id: 'steelSpine',   name: 'Steel Spine',      price: 200, desc: 'Treasure. Cursed cards block Liar for 1 turn instead of 2 after pickup.' },
     stackedDeck:  { id: 'stackedDeck',  name: 'Stacked Deck',     price: 250, desc: 'Treasure. Run deck cap raised from 24 to 32.' },
     mogul:        { id: 'mogul',        name: 'The Mogul',        price: 400, desc: "Treasure (Lugen-locked). Shop offers +1 of each (4 jokers, 4 cards, 4 consumables) and 10% off everything. Unlocks after 5 Lugen kills.", unlock: { type: 'lugenKills', count: 5 } },
+    brassRing:    { id: 'brassRing',    name: 'Brass Ring',        price: 200, desc: 'Treasure. Consumable inventory cap +2 (default 3 → 5).' },
   };
 
   const HEART_SHARDS_REQUIRED = 3;     // 3 shards = +1 Heart
   const LEDGER_GOLD_MULT = 1.25;       // The Ledger relic multiplier
   const BURN_CAP = 8;                  // Max burned cards per round before recycling
   const TREASURE_CHANCE_ACT_III = 0.33; // Act III non-boss floors swap Reward for Treasure
+  const LAST_CALL_TURN_LIMIT = 5;       // Last Call modifier: plays per player per round
+  const LAST_CALL_GOLD_PENALTY = 0.30;  // Most-cards loser pays this fraction
 
   // Phase 5: jokers — passive/triggered perks held in 2 slots
   const JOKER_CATALOG = {
@@ -521,12 +526,12 @@
     {
       id: 'counterfeit',
       name: 'Counterfeit',
-      // Bumped from 35g to 50g and gated to once-per-floor (was once-per-round)
-      // to match the design doc. Cheaper-and-faster turned this into a reflex
-      // button; floor-locked makes it a real timing decision.
+      // 50g (bumped from 35g for tuning). Effect is once-per-round, not
+      // once-per-floor: the per-round limit is enforced via state.counterfeitUsed
+      // which resets every round. Multiple Counterfeits in inventory means
+      // you can use one each round.
       price: 50,
-      floorLocked: true,
-      desc: 'Change the target rank now AND lock it through the next Liar call (target survives one rotation). Once per floor.',
+      desc: 'Change the target rank for the rest of the round AND lock it through the next Liar call. Once per round.',
       enabled: true,
     },
     {
@@ -664,22 +669,12 @@
     },
     {
       title: 'Mysterious Stranger',
-      text: "A hooded figure offers a trade: a random card from your run deck for one of theirs (rumored to carry odd affixes).",
-      run: () => {
-        if (!runState.runDeck || runState.runDeck.length === 0) return 'No deck to trade.';
-        const idx = Math.floor(Math.random() * runState.runDeck.length);
-        const lost = runState.runDeck[idx];
-        const newAffix = _randAffix();
-        const newRank = _randRank();
-        runState.runDeck[idx] = {
-          rank: newRank,
-          id: 'mystery_' + Date.now() + '_' + Math.floor(Math.random()*1000),
-          owner: 0,
-          affix: newAffix,
-        };
-        return 'Traded ' + lost.rank + (lost.affix ? '['+lost.affix+']' : '') +
-               ' for ' + newRank + ' [' + newAffix + ']';
-      },
+      text: "A hooded figure offers a trade: pick one card from your run deck. They'll exchange it for a card of theirs (rumored to carry odd affixes).",
+      // `interactive: true` flips chooseEvent into picker mode for this
+      // event. The picker is rendered into the event result area; once the
+      // player clicks a card, the trade resolves and the result text updates.
+      interactive: true,
+      pickerKind: 'mysteriousStranger',
     },
     {
       title: 'Wandering Merchant',
@@ -760,7 +755,7 @@
       title: 'Drunken Brawl',
       text: 'A brawl breaks out. You take a hit but pocket a Counterfeit on the way out.',
       run: () => {
-        const cost = Math.min(30, runState.gold);
+        const cost = Math.min(40, runState.gold);
         runState.gold -= cost;
         runState.inventory.counterfeit = (runState.inventory.counterfeit || 0) + 1;
         return '-' + cost + 'g, +1 Counterfeit.';
@@ -814,6 +809,8 @@
     lastStand:     { id: 'lastStand',     cat: 'Run-defining',name: 'Last Stand',       desc: 'Win a round with 1 card in hand and 1 Heart remaining.',          unlocks: 'Phoenix border tint' },
     gamblersHand:  { id: 'gamblersHand',  cat: 'Run-defining',name: "The Gambler's Hand", desc: "Win Charlatan's Bet 5 times in a row in a single run.",           unlocks: 'Coin-flip animation' },
     stoic:         { id: 'stoic',         cat: 'Run-defining',name: 'Stoic',            desc: 'Use no consumables in an entire run.',                              unlocks: '\"Monk\" character portrait' },
+    mindReader:    { id: 'mindReader',    cat: 'Mastery',     name: 'The Mind-Reader',  desc: 'Call LIAR correctly 5 times in a row in a single floor.',          unlocks: 'Glowing-eye card back skin' },
+    fox:           { id: 'fox',           cat: 'Mastery',     name: 'The Fox',          desc: 'Bluff every play in a single round and survive without being caught.', unlocks: 'Foxtail card back' },
   };
 
   const _ACH_STORAGE_KEY = 'lugenBetaAchievements';
@@ -924,10 +921,53 @@
     }
   }
 
+  // Generate a human-readable seed code like "4F2K-9A7B". The first half
+  // becomes the PRNG seed; the format is just for display + sharing. Avoids
+  // ambiguous chars (I/O/0/1).
+  function _generateRunSeed() {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let s = '';
+    for (let i = 0; i < 8; i++) {
+      if (i === 4) s += '-';
+      s += chars[Math.floor(Math.random() * chars.length)];
+    }
+    return s;
+  }
+  // Convert a seed string into a 32-bit unsigned integer for PRNG seeding.
+  function _seedToInt(seed) {
+    let h = 2166136261 >>> 0; // FNV-1a
+    for (let i = 0; i < seed.length; i++) {
+      h ^= seed.charCodeAt(i);
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    return h || 1;
+  }
+  // mulberry32 — small fast deterministic PRNG. Returns [0,1) like Math.random.
+  function _seededRng(seedInt) {
+    let a = seedInt >>> 0;
+    return function () {
+      a = (a + 0x6D2B79F5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  // Per-floor deterministic RNG: same (run seed + floor) always returns the
+  // same stream. Used by fork variation, future events, anything that should
+  // be reproducible from the seed.
+  function floorRng(floor) {
+    const seedStr = (runState && runState.seed) || 'NOSEED';
+    const intSeed = _seedToInt(seedStr + ':floor:' + (floor | 0));
+    return _seededRng(intSeed);
+  }
+
   function startRun(characterId) {
     const character = (characterId && CHARACTER_CATALOG[characterId]) || null;
+    const seed = _generateRunSeed();
     runState = {
       hearts: STARTING_HEARTS,
+      seed: seed,                                  // seed code, e.g. "4F2K-9A7B"
       currentFloor: 1,
       roundsWon: new Array(NUM_PLAYERS).fill(0),
       gold: (character && character.startingGold) || 0,
@@ -1258,6 +1298,16 @@
       callersMarkFiredThisRound: false, // Caller's Mark joker: first LIAR call only
       screamerRevealedRank: null,   // The Screamer: while set, every card of this rank is publicly revealed
       lieDetectorArmed: false,      // Lie Detector consumable: arm flag
+      // Last Call modifier: tracks plays per player (5 max each). Once you
+      // hit the cap you're locked out of the rotation for the rest of the
+      // round. End-of-round penalty fires in endRound.
+      turnsTaken: new Array(NUM_PLAYERS).fill(0),
+      outOfTurns: new Array(NUM_PLAYERS).fill(false),
+      // The Fox achievement: stays true while every human play this round
+      // has been a bluff AND the human hasn't been caught. Granted at
+      // round end if streak survives + at least 1 play happened.
+      humanPlaysThisRound: 0,
+      foxStreakAlive: true,
       stackedHandActive: !!(runState && runState.stackedHandPending), // Stacked Hand: own-deck +20% this round
       // Achievement: Liar's Tongue tracks human lies per round.
       humanLiesThisRound: 0,
@@ -1375,6 +1425,35 @@
     state.challengeOpen = false;
     clearAllTimers();
 
+    // Last Call modifier penalty: whoever has the most cards left in hand
+    // pays 30% of their gold. Solo only the human has a gold pool, so this
+    // only stings when the human happens to be the most-cards loser.
+    if (runState && runState.currentFloorModifier === 'lastCall') {
+      let maxCards = -1;
+      let losers = [];
+      for (let i = 0; i < NUM_PLAYERS; i++) {
+        if (state.eliminated[i]) continue;
+        const n = (state.hands[i] || []).length;
+        if (n > maxCards) { maxCards = n; losers = [i]; }
+        else if (n === maxCards) losers.push(i);
+      }
+      if (losers.length > 0 && maxCards > 0) {
+        if (losers.includes(0)) {
+          const fee = Math.floor((runState.gold || 0) * LAST_CALL_GOLD_PENALTY);
+          if (fee > 0) {
+            runState.gold -= fee;
+            log('Last Call: you held ' + maxCards + ' cards — pay 30% of your gold (-' + fee + 'g).');
+          } else {
+            log('Last Call: you held ' + maxCards + ' cards but had no gold to forfeit.');
+          }
+        } else {
+          // A bot is the most-cards loser — purely flavor in solo since
+          // bots have no gold to lose. Still a satisfying log line.
+          log('Last Call: ' + playerLabel(losers[0]) + ' is stuck with ' + maxCards + ' cards.');
+        }
+      }
+    }
+
     // Phase 7+: Iron Stomach — restore Glass-burned run-deck cards as Steel
     if (hasRelic('ironStomach') && state.ironStomachBurned && state.ironStomachBurned.length > 0) {
       let restored = 0;
@@ -1415,6 +1494,14 @@
     // Liar's Tongue: 10+ lies in a round + never caught -> grant.
     if (state && (state.humanLiesThisRound || 0) >= 10 && !state.humanCaughtThisRound) {
       _achGrant('liarsTongue');
+    }
+    // The Fox: every play this round was a bluff AND the human survived
+    // (not caught, not eliminated). Requires at least 1 play so a 0-play
+    // round can't trivially satisfy the condition.
+    if (state && state.foxStreakAlive &&
+        (state.humanPlaysThisRound || 0) >= 1 &&
+        !state.eliminated[0] && !state.humanCaughtThisRound) {
+      _achGrant('fox');
     }
     // Pacifier: track holding the SAME Cursed card across rounds.
     if (state && state.hands && state.hands[0] && runState && runState.ach) {
@@ -1556,6 +1643,7 @@
     runState.loadedDieUsedThisFloor = false;  // Phase 7+: reset Loaded Die per floor
     runState.crookedDieUsedThisFloor = false; // Crooked Die consumable per-floor cap
     runState.screamerUsedThisFloor = false;   // The Screamer joker per-floor cap
+    if (runState.ach) runState.ach.mindReaderStreak = 0; // Mind-Reader resets between floors
     runState.floorLockedBoughtThisFloor = {};  // Reset floor-locked shop items
     runState.lastWordUsedThisFloor = false;    // Last Word joker
     runState.saboteurUsedThisFloor = false;    // Saboteur joker
@@ -1981,7 +2069,8 @@
   function advanceTurn(fromIdx) {
     for (let i = 1; i <= NUM_PLAYERS; i++) {
       const next = (fromIdx + i) % NUM_PLAYERS;
-      if (!state.eliminated[next] && !state.finished[next]) {
+      // Skip out-of-turns players too (Last Call modifier).
+      if (!state.eliminated[next] && !state.finished[next] && !state.outOfTurns[next]) {
         state.currentTurn = next;
         triggerGildedTurn();  // Phase 5: Gilded ticks on every turn
         return;
@@ -1994,7 +2083,7 @@
     for (let i = 1; i <= NUM_PLAYERS; i++) {
       const idx = (fromIdx + i) % NUM_PLAYERS;
       if (idx === fromIdx) break;
-      if (!state.eliminated[idx] && !state.finished[idx]) return idx;
+      if (!state.eliminated[idx] && !state.finished[idx] && !state.outOfTurns[idx]) return idx;
     }
     return -1;
   }
@@ -2107,6 +2196,17 @@
       claim: _claimOverride || state.targetRank,
     };
 
+    // Last Call modifier: count plays per player. After 5 plays the player
+    // is marked outOfTurns (skipped on rotation, can't play more). Round
+    // resolves naturally once everyone is finished/eliminated/out-of-turns.
+    state.turnsTaken[playerIdx] = (state.turnsTaken[playerIdx] || 0) + 1;
+    if (runState && runState.currentFloorModifier === 'lastCall' &&
+        state.turnsTaken[playerIdx] >= LAST_CALL_TURN_LIMIT &&
+        !state.outOfTurns[playerIdx]) {
+      state.outOfTurns[playerIdx] = true;
+      log('Last Call: ' + playerLabel(playerIdx) + ' has used all 5 plays.');
+    }
+
     // Track human's most recent play for Mimic personality + The Mirror boss.
     if (playerIdx === 0) {
       const wasBluff = !cards.every(c => c.rank === state.targetRank || c.affix === 'mirage');
@@ -2116,6 +2216,15 @@
         wasBluff: wasBluff,
       };
       if (wasBluff) state.humanLiesThisRound = (state.humanLiesThisRound || 0) + 1;
+      // The Fox achievement: requires every play this round to be a bluff
+      // AND the human to survive (not caught). humanPlays = total plays
+      // count, foxStreak = consecutive bluffs from start of round.
+      state.humanPlaysThisRound = (state.humanPlaysThisRound || 0) + 1;
+      if (wasBluff) {
+        state.foxStreakAlive = state.foxStreakAlive !== false; // stays true unless cleared
+      } else {
+        state.foxStreakAlive = false; // a single truthful play breaks The Fox
+      }
     }
 
     log(playerLabel(playerIdx) + ' plays ' + cards.length +
@@ -2651,6 +2760,18 @@
         }
       }
 
+      // Mind-Reader achievement: track the human's correct-LIAR streak per
+      // floor. allMatch === false means the call was right (caught a lie).
+      // Streak resets when the human is wrong, and on floor advance.
+      if (challengerIdx === 0 && runState && runState.ach) {
+        if (!allMatch) {
+          runState.ach.mindReaderStreak = (runState.ach.mindReaderStreak || 0) + 1;
+          if (runState.ach.mindReaderStreak >= 5) _achGrant('mindReader');
+        } else {
+          runState.ach.mindReaderStreak = 0;
+        }
+      }
+
       if (allMatch) {
         if (lp.playerIdx === 0 && runState && runState.ach) {
           runState.ach.truthSurvivals = (runState.ach.truthSurvivals || 0) + 1;
@@ -2732,7 +2853,11 @@
             }
           }
         }
-        if (lp.playerIdx === 0) state.humanCaughtThisRound = true;
+        if (lp.playerIdx === 0) {
+          state.humanCaughtThisRound = true;
+          // The Fox: getting caught nullifies the round's bluff streak.
+          state.foxStreakAlive = false;
+        }
         const _liePileSize = state.pile.length;
         log('Lie caught! ' + playerLabel(lp.playerIdx) +
             ' takes the pile (' + _liePileSize + ' cards). ' +
@@ -2808,12 +2933,13 @@
   }
 
   // Round ends when at most 2 players remain active (not finished, not
-  // eliminated). Returns true if the round was just ended, false otherwise.
+  // eliminated, not out-of-turns from Last Call). Returns true if the
+  // round was just ended, false otherwise.
   function endRoundIfDone() {
     if (state.gameOver) return true;
     let active = 0;
     for (let i = 0; i < NUM_PLAYERS; i++) {
-      if (!state.eliminated[i] && !state.finished[i]) active++;
+      if (!state.eliminated[i] && !state.finished[i] && !state.outOfTurns[i]) active++;
     }
     if (active > 2) return false;
 
@@ -3046,44 +3172,55 @@
 
   function renderJokerRow() {
     if (!runState) return;
-    // Ensure DOM has the right number of slots — create or remove as needed.
     const jokerRow = document.getElementById('betaJokerRow');
     const surveyorMarker = document.getElementById('betaSurveyorInfo');
-    if (jokerRow && surveyorMarker) {
-      const need = runState.jokers.length;
-      // Remove extras
-      let slot = document.getElementById('betaJokerSlot' + need);
-      while (slot) { slot.remove(); slot = document.getElementById('betaJokerSlot' + (need + (slot ? 1 : 0))); break; }
-      // Easier: remove all betaJokerSlot* and recreate.
-      Array.from(jokerRow.querySelectorAll('[id^="betaJokerSlot"]')).forEach(el => el.remove());
-      for (let i = 0; i < need; i++) {
-        const div = document.createElement('div');
-        div.id = 'betaJokerSlot' + i;
+    if (!jokerRow) return;
+
+    // Wipe existing slot tiles and rebuild from scratch. We use event
+    // delegation on the row container instead of attaching per-tile
+    // listeners, so clicks can't get lost when the row re-renders mid-click.
+    Array.from(jokerRow.querySelectorAll('[id^="betaJokerSlot"]')).forEach(el => el.remove());
+    const slots = runState.jokers.length;
+    for (let i = 0; i < slots; i++) {
+      const j = runState.jokers[i];
+      const div = document.createElement('div');
+      div.id = 'betaJokerSlot' + i;
+      div.dataset.slotIdx = String(i);
+      if (j) {
+        // Stack indicator for stackable jokers (e.g. Sixth Sense ×2/3).
+        const stk = (j.stackable && runState.jokerStacks && runState.jokerStacks[j.id])
+          ? runState.jokerStacks[j.id] : 0;
+        const stackPill = stk > 1
+          ? ' <span class="ml-1 inline-block bg-yellow-400 text-black px-1 rounded text-[10px] font-bold">×' + stk + '</span>'
+          : '';
+        div.className = 'inline-flex items-center gap-1 px-2 py-1 rounded bg-purple-900/40 cursor-pointer hover:bg-purple-800/60 transition select-none';
+        div.title = (j.name + ' — ' + (j.desc || ''));
+        div.innerHTML = '<span class="font-bold text-purple-200">' + escapeHtml(j.name) + '</span>' + stackPill;
+      } else {
         div.className = 'inline-flex items-center gap-1 px-2 py-1 rounded bg-black/40';
         div.innerHTML = '<span class="italic text-white/40">Empty</span>';
-        jokerRow.insertBefore(div, surveyorMarker);
       }
+      if (surveyorMarker) jokerRow.insertBefore(div, surveyorMarker);
+      else                jokerRow.appendChild(div);
     }
-    for (let i = 0; i < runState.jokers.length; i++) {
-      const slot = document.getElementById('betaJokerSlot' + i);
-      if (!slot) continue;
-      const fresh = slot.cloneNode(false);
-      slot.parentNode.replaceChild(fresh, slot);
-      fresh.id = 'betaJokerSlot' + i;
-      const j = runState.jokers[i];
-      if (j) {
-        fresh.innerHTML = '<span class="font-bold text-purple-200">' +
-                         escapeHtml(j.name) + '</span>';
-        fresh.title = j.desc || '';
-        fresh.className = 'inline-flex items-center gap-1 px-2 py-1 rounded bg-purple-900/40 cursor-pointer hover:bg-purple-800/60 transition';
-        fresh.addEventListener('click', () => {
-          showInfoModal(j.name, '[' + (j.rarity || 'Joker') + '] (slot ' + (i + 1) + ')', j.desc || '');
-        });
-      } else {
-        fresh.innerHTML = '<span class="italic text-white/40">Empty</span>';
-        fresh.title = '';
-        fresh.className = 'inline-flex items-center gap-1 px-2 py-1 rounded bg-black/40';
-      }
+
+    // Event delegation: install once, survives every re-render. Clicks on a
+    // joker tile (or its child span) bubble up; we walk up to find the slot.
+    if (!jokerRow._jokerClickWired) {
+      jokerRow._jokerClickWired = true;
+      jokerRow.addEventListener('click', (e) => {
+        const target = e.target.closest('[data-slot-idx]');
+        if (!target) return;
+        const idx = parseInt(target.dataset.slotIdx, 10);
+        if (isNaN(idx)) return;
+        const jk = runState && runState.jokers && runState.jokers[idx];
+        if (!jk) return;
+        const stk = (jk.stackable && runState.jokerStacks && runState.jokerStacks[jk.id])
+          ? runState.jokerStacks[jk.id] : 1;
+        const subtitle = '[' + (jk.rarity || 'Joker') + '] · slot ' + (idx + 1) +
+          (jk.stackable ? ' · stack ' + stk + '/' + (jk.maxStack || 1) : '');
+        showInfoModal(jk.name, subtitle, jk.desc || '(no description)');
+      });
     }
     // Surveyor — show top of draw pile when held
     const surveyorInfo = document.getElementById('betaSurveyorInfo');
@@ -3595,7 +3732,7 @@
     document.getElementById('betaHearts').textContent = heartsString(runState.hearts) +
       (runState.heartShards > 0 ? ' (' + runState.heartShards + '/' + HEART_SHARDS_REQUIRED + ' shards)' : '');
     document.getElementById('betaGold').textContent = runState.gold;
-    document.getElementById('betaInventoryCount').textContent = totalInventory();
+    document.getElementById('betaInventoryCount').textContent = totalInventory() + ' / ' + inventoryCap();
 
     const labels = ['You', BOT_NAMES[0].replace('Bot ', ''),
                     BOT_NAMES[1].replace('Bot ', ''),
@@ -3611,6 +3748,18 @@
   function totalInventory() {
     if (!runState) return 0;
     return Object.values(runState.inventory).reduce((a, b) => a + b, 0);
+  }
+
+  // Default consumable inventory cap. The Brass Ring relic raises it by 2.
+  // Used to gate shop consumable purchases — players hit a real "do I keep
+  // this Smoke Bomb or buy a Counterfeit?" decision instead of stockpiling.
+  const INVENTORY_CAP_BASE = 3;
+  const BRASS_RING_BONUS = 2;
+  function inventoryCap() {
+    return INVENTORY_CAP_BASE + (hasRelic('brassRing') ? BRASS_RING_BONUS : 0);
+  }
+  function inventoryFull() {
+    return totalInventory() >= inventoryCap();
   }
 
 
@@ -4732,16 +4881,75 @@
     return f === 2 || f === 5 || f === 8;
   }
 
+  // Fork-type definitions, used by the seeded picker below. Each entry has
+  // the visual content + click handler that the chosen fork buttons render.
+  // Shop is always pinned to the leftmost fork button (first child of the
+  // fork panel) — never re-rolled.
+  const FORK_TYPES = {
+    reward: {
+      html: '<div class="text-2xl font-bold mb-1">&#128176; Reward</div>' +
+            '<div class="text-sm opacity-80">Take 75g / Gilded upgrade / pick a joker.</div>',
+      className: 'bg-emerald-700 hover:bg-emerald-600 p-6 rounded-xl text-left transition',
+      onClick: () => chooseReward(),
+    },
+    event: {
+      html: '<div class="text-2xl font-bold mb-1">&#10067; Event</div>' +
+            '<div class="text-sm opacity-80">A random encounter. Risk and reward.</div>',
+      className: 'bg-purple-700 hover:bg-purple-600 p-6 rounded-xl text-left transition',
+      onClick: () => chooseEvent(),
+    },
+    cleanse: {
+      html: '<div class="text-2xl font-bold mb-1">&#10024; Cleanse</div>' +
+            '<div class="text-sm opacity-80">Strip an affix or remove a Cursed card from your run deck.</div>',
+      className: 'bg-cyan-700 hover:bg-cyan-600 p-6 rounded-xl text-left transition',
+      onClick: () => chooseCleanse(),
+    },
+    treasure: {
+      html: '<div class="text-2xl font-bold mb-1">&#128137; Treasure</div>' +
+            '<div class="text-sm opacity-80">Free relic from a treasure pool.</div>',
+      className: 'bg-amber-700 hover:bg-amber-600 p-6 rounded-xl text-left transition',
+      onClick: () => chooseTreasure(),
+    },
+  };
+
+  // Pick which 2 non-Shop fork types appear this floor. Picks are deterministic
+  // from the run seed + floor — same seed/floor pair always produces the same
+  // forks, so seeds can be shared/replayed.
+  // Pool composition:
+  //   - reward: always available
+  //   - event: always available (3+ floors at 9 rolls means it'll show up often)
+  //   - cleanse: still gated to "cleanse-flavour" floors (2/5/8) so it stays
+  //     a known-when-it's-coming structural beat rather than rare random luck
+  //   - treasure: Act III only (floors 7/8) and a 33% chance via the seeded
+  //     RNG — rare by design
+  function pickFloorForks(floor) {
+    const rng = floorRng(floor);
+    const pool = ['reward', 'event'];
+    if (isCleanseFloor()) pool.push('cleanse');
+    // Act III treasure roll: same threshold as the previous Math.random
+    // version, but now seeded.
+    if (floor >= 7 && floor <= 8 && rng() < TREASURE_CHANCE_ACT_III) {
+      pool.push('treasure');
+    }
+    // Shuffle deterministically with the per-floor RNG (Fisher–Yates).
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    // Take the first two unique picks. Reward stays in the pool by default
+    // so most runs see at least one Reward across the typical Shop+2 layout.
+    return pool.slice(0, 2);
+  }
+
   function showFork(floorJustFinished, humanWonFloor, winnerIdx, lastRoundMessage) {
     hideAllPanels();
     document.getElementById('betaResult').classList.add('hidden');
 
-    // Phase 8+: Act III non-boss floors get a chance for Treasure (replaces Reward)
-    runState.forkOfferTreasure = (
-      runState.currentFloor >= 7 &&
-      runState.currentFloor <= 8 &&
-      Math.random() < TREASURE_CHANCE_ACT_III
-    );
+    // Pick the 2 non-Shop fork options for this floor (seeded).
+    const picks = pickFloorForks(runState.currentFloor);
+    // For backward compat with legacy code paths that read forkOfferTreasure
+    // (e.g. chooseReward()'s "if forkOfferTreasure → chooseTreasure" guard).
+    runState.forkOfferTreasure = picks.includes('treasure');
 
     const banner = document.getElementById('betaForkBanner');
     if (humanWonFloor) {
@@ -4763,39 +4971,33 @@
     document.getElementById('betaForkHearts').textContent = heartsString(runState.hearts);
     document.getElementById('betaForkGold').textContent = runState.gold;
     document.getElementById('betaForkInventory').textContent = totalInventory();
-    // Phase 8+: swap Reward button visuals for Treasure on lucky Act III floors
-    const rewardBtn = document.getElementById('betaForkRewardBtn');
-    if (rewardBtn) {
-      if (runState.forkOfferTreasure) {
-        rewardBtn.innerHTML = '<div class="text-2xl font-bold mb-1">&#128137; Treasure</div>' +
-          '<div class="text-sm opacity-80">Free relic from a treasure pool.</div>';
-        rewardBtn.className = 'bg-amber-700 hover:bg-amber-600 p-6 rounded-xl text-left transition';
-      } else {
-        rewardBtn.innerHTML = '<div class="text-2xl font-bold mb-1">&#128176; Reward</div>' +
-          '<div class="text-sm opacity-80">Take 75g / Gilded upgrade / pick a joker.</div>';
-        rewardBtn.className = 'bg-emerald-700 hover:bg-emerald-600 p-6 rounded-xl text-left transition';
-      }
-    }
+    const _seedEl = document.getElementById('betaForkSeed');
+    if (_seedEl) _seedEl.textContent = runState.seed || '--------';
 
-    // Swap Event for Cleanse on floors 2, 5, 8 to match the design path.
-    const eventBtn = document.getElementById('betaForkEventBtn');
-    if (eventBtn) {
-      // Replace the node so we can re-attach a clean click handler each visit.
-      const fresh = eventBtn.cloneNode(false);
-      fresh.id = 'betaForkEventBtn';
-      eventBtn.parentNode.replaceChild(fresh, eventBtn);
-      if (isCleanseFloor()) {
-        fresh.innerHTML = '<div class="text-2xl font-bold mb-1">&#10024; Cleanse</div>' +
-          '<div class="text-sm opacity-80">Strip an affix or remove a Cursed card from your run deck.</div>';
-        fresh.className = 'bg-cyan-700 hover:bg-cyan-600 p-6 rounded-xl text-left transition';
-        fresh.addEventListener('click', chooseCleanse);
-      } else {
-        fresh.innerHTML = '<div class="text-2xl font-bold mb-1">&#10067; Event</div>' +
-          '<div class="text-sm opacity-80">A random encounter. Risk and reward.</div>';
-        fresh.className = 'bg-purple-700 hover:bg-purple-600 p-6 rounded-xl text-left transition';
-        fresh.addEventListener('click', chooseEvent);
+    // Render the two non-Shop fork buttons. Slot 0 is the Reward-or-Treasure
+    // button id ('betaForkRewardBtn'); slot 1 is the Event-or-Cleanse button
+    // id ('betaForkEventBtn'). We re-attach handlers cleanly on each visit
+    // by replacing the nodes.
+    const renderForkSlot = (slotId, kind) => {
+      const oldBtn = document.getElementById(slotId);
+      if (!oldBtn) return;
+      const fresh = oldBtn.cloneNode(false);
+      fresh.id = slotId;
+      oldBtn.parentNode.replaceChild(fresh, oldBtn);
+      const def = FORK_TYPES[kind];
+      if (!def) {
+        // Shouldn't happen with current pool, but if it does, hide the slot.
+        fresh.classList.add('hidden');
+        return;
       }
-    }
+      fresh.classList.remove('hidden');
+      fresh.innerHTML = def.html;
+      fresh.className = def.className;
+      fresh.addEventListener('click', def.onClick);
+    };
+    renderForkSlot('betaForkRewardBtn', picks[0]);
+    renderForkSlot('betaForkEventBtn',  picks[1]);
+
     document.getElementById('betaFork').classList.remove('hidden');
   }
 
@@ -5223,15 +5425,76 @@
   function chooseEvent() {
     hideAllPanels();
     const ev = EVENTS[Math.floor(Math.random() * EVENTS.length)];
+    document.getElementById('betaEventTitle').textContent = ev.title;
+    document.getElementById('betaEventText').textContent = ev.text;
+    document.getElementById('betaEventNextFloor').textContent = runState.currentFloor;
+    document.getElementById('betaEvent').classList.remove('hidden');
+
+    // Interactive events render a picker into the result area instead of
+    // calling ev.run() synchronously. The picker handler is responsible for
+    // updating the result text and logging the outcome once the player picks.
+    if (ev.interactive && ev.pickerKind === 'mysteriousStranger') {
+      _runMysteriousStrangerPicker();
+      return;
+    }
+
     const before = runState.gold;
     const result = ev.run();
     log('Event: ' + ev.title + ' — ' + result +
         ' (gold ' + before + 'g -> ' + runState.gold + 'g).');
-    document.getElementById('betaEventTitle').textContent = ev.title;
-    document.getElementById('betaEventText').textContent = ev.text;
     document.getElementById('betaEventResult').textContent = result;
-    document.getElementById('betaEventNextFloor').textContent = runState.currentFloor;
-    document.getElementById('betaEvent').classList.remove('hidden');
+  }
+
+  // Mysterious Stranger picker: render the player's run deck inline and
+  // let them pick which card to trade. The trade resolves once they click;
+  // the Continue button stays hidden behind the picker until then.
+  function _runMysteriousStrangerPicker() {
+    const resultEl = document.getElementById('betaEventResult');
+    if (!resultEl) return;
+    if (!runState.runDeck || runState.runDeck.length === 0) {
+      resultEl.textContent = 'No deck to trade.';
+      log('Event: Mysterious Stranger — No deck to trade.');
+      return;
+    }
+    resultEl.innerHTML = '<div class="text-emerald-200 mb-3">Pick a card to trade away.</div>' +
+                         '<div id="msPickerCards" class="flex flex-wrap gap-2 justify-center"></div>';
+    const cardsDiv = document.getElementById('msPickerCards');
+    if (!cardsDiv) return;
+    const order = ['A', 'K', 'Q', '10', 'J'];
+    const sorted = runState.runDeck.slice().sort((a, b) => {
+      const ai = order.indexOf(a.rank), bi = order.indexOf(b.rank);
+      if (ai !== bi) return ai - bi;
+      return (a.id || '').localeCompare(b.id || '');
+    });
+    for (const c of sorted) {
+      const div = document.createElement('button');
+      let cls = 'card card-face flex items-center justify-center text-2xl font-bold text-black rounded transition cursor-pointer hover:ring-yellow-400 hover:ring-2';
+      const ring = affixRingClass(c.affix);
+      if (ring) cls += ' ' + ring;
+      else if (c.owner === 0) cls += ' ring-2 ring-emerald-400';
+      div.className = cls;
+      div.textContent = c.rank;
+      if (c.affix) div.title = 'Affix: ' + c.affix;
+      const cardId = c.id;
+      div.addEventListener('click', () => {
+        const idx = runState.runDeck.findIndex(rc => rc.id === cardId);
+        if (idx < 0) return;
+        const lost = runState.runDeck[idx];
+        const newAffix = _randAffix();
+        const newRank = _randRank();
+        runState.runDeck[idx] = {
+          rank: newRank,
+          id: 'mystery_' + Date.now() + '_' + Math.floor(Math.random()*1000),
+          owner: 0,
+          affix: newAffix,
+        };
+        const result = 'Traded ' + lost.rank + (lost.affix ? '['+lost.affix+']' : '[plain]') +
+                       ' for ' + newRank + ' [' + newAffix + ']';
+        log('Event: Mysterious Stranger — ' + result + '.');
+        resultEl.textContent = result;
+      });
+      cardsDiv.appendChild(div);
+    }
   }
 
   function continueAfterFork() {
@@ -5275,7 +5538,7 @@
       const canAfford = runState.gold >= item.price;
       // Floor-locked items per design: Forger, Jack-be-Nimble, and now
       // Counterfeit (bumped to once-per-floor when its price went 35g -> 50g).
-      const FLOOR_LOCKED_IDS = ['forger', 'jackBeNimble', 'counterfeit', 'crookedDie'];
+      const FLOOR_LOCKED_IDS = ['forger', 'jackBeNimble', 'crookedDie'];
       const floorLocked = FLOOR_LOCKED_IDS.includes(item.id) &&
                           runState.floorLockedBoughtThisFloor &&
                           runState.floorLockedBoughtThisFloor[item.id];
@@ -5287,11 +5550,17 @@
       const _maxStack     = (_catalogJoker && _catalogJoker.maxStack) || 1;
       const _curStack     = (isJoker && equipped) ? jokerStack(item.id) : 0;
       const _stackedFull  = isJoker && _stackable && equipped && _curStack >= _maxStack;
+      // Inventory cap (consumables only, default 3, +2 with Brass Ring relic).
+      // Jokers/relics/services don't consume inventory slots. Joker entries
+      // and relic entries always have item.type set; consumables can have
+      // type 'service' or no type (legacy plain consumables).
+      const _isInventoryItem = !isJoker && !isRelic && item.type !== 'service';
+      const _invFull = _isInventoryItem && inventoryFull();
       const disabled = !item.enabled || !canAfford ||
                        (isJoker && !_stackable && (equipped || slotsFull)) ||
                        (isJoker &&  _stackable && (_stackedFull || (slotsFull && !equipped))) ||
                        (isRelic && ownedRelic) ||
-                       floorLocked;
+                       floorLocked || _invFull;
       const row = document.createElement('div');
       row.className = 'bg-black/40 hover:bg-black/50 transition p-3 rounded-xl border border-white/10' +
                        (item.enabled ? '' : ' opacity-60');
@@ -5307,6 +5576,8 @@
         btnLabel = 'Owned';
       } else if (floorLocked) {
         btnLabel = 'Floor-locked';
+      } else if (_invFull) {
+        btnLabel = 'Inventory full (' + inventoryCap() + ')';
       }
       const priceColor = canAfford ? 'bg-yellow-400 text-black' : 'bg-rose-500 text-white';
       row.innerHTML =
