@@ -480,7 +480,8 @@ async function recordBetaRun(userId, run) {
     result: run.result === 'won' ? 'won' : 'lost',
     maxFloor: Math.max(1, Math.min(99, parseInt(run.maxFloor, 10) || 1)),
     hearts: Math.max(0, Math.min(9, parseInt(run.hearts, 10) || 0)),
-    gold: Math.max(0, Math.min(99999, parseInt(run.gold, 10) || 0))
+    gold: Math.max(0, Math.min(99999, parseInt(run.gold, 10) || 0)),
+    mode: run.mode === 'pvp' ? 'pvp' : 'solo'
   };
   const next = [sanitized, ...cur].slice(0, RUN_HISTORY_CAP);
   const { error } = await supabase.from('users').update({ beta_run_history: next }).eq('id', userId);

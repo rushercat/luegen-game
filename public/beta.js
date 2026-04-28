@@ -3022,20 +3022,23 @@
 
   // Phase 8+: generic affix applicator for Spiked Wire / Steel Plating / Mirage Lens
   function startAffixApply(item, affixId) {
-    const eligible = runState.runDeck.filter(c => !c.affix);
+    // Steel cards cannot be changed; everything else (with or without affix) can be overwritten.
+    const eligible = runState.runDeck.filter(c => c.affix !== 'steel');
     if (eligible.length === 0) {
-      log(item.name + ': no unaffixed run-deck cards.');
+      log(item.name + ': no eligible run-deck cards (all Steel).');
       return;
     }
     showServicePicker({
-      title: item.name + ' — pick a run-deck card to apply ' + affixId,
+      title: item.name + ' — pick a run-deck card to apply ' + affixId + ' (overwrites existing affix)',
       cards: eligible,
       onPick: (cardId) => {
         const card = runState.runDeck.find(c => c.id === cardId);
         if (!card) return;
         runState.gold -= item.price;
+        const prev = card.affix;
         card.affix = affixId;
-        log(item.name + ' applied to ' + card.rank + '. (-' + item.price + 'g)');
+        const verb = prev ? 'overwrote ' + prev + ' with ' + affixId : 'applied ' + affixId;
+        log(item.name + ': ' + verb + ' on ' + card.rank + '. (-' + item.price + 'g)');
         closeServicePicker();
         renderShop();
       },
@@ -3618,6 +3621,13 @@
   document.getElementById('betaCounterfeitCancelBtn').addEventListener('click', cancelCounterfeit);
   const _dtBtn = document.getElementById('betaDoubletalkBtn');
   if (_dtBtn) _dtBtn.addEventListener('click', toggleDoubletalk);
+  const _sohBtn = document.getElementById('betaSleightBtn');
+  if (_sohBtn) _sohBtn.addEventListener('click', useSleightOfHand);
+  const _ldBtn = document.getElementById('betaLoadedDieBtn');
+  if (_ldBtn) _ldBtn.addEventListener('click', useLoadedDie);
+
+})();
+ick', toggleDoubletalk);
   const _sohBtn = document.getElementById('betaSleightBtn');
   if (_sohBtn) _sohBtn.addEventListener('click', useSleightOfHand);
   const _ldBtn = document.getElementById('betaLoadedDieBtn');

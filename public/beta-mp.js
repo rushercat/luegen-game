@@ -14,12 +14,14 @@
 
   // Character roster (mirror of server) — for the lobby picker
   const CHARACTERS = [
-    { id: 'ace',       name: 'The Ace',       passive: 'No special ability.' },
-    { id: 'trickster', name: 'The Trickster', passive: 'No special ability.' },
-    { id: 'hoarder',   name: 'The Hoarder',   passive: 'Hand size +1 (6 cards).' },
-    { id: 'banker',    name: 'The Banker',    passive: 'Start with 150g + a Gilded Ace.' },
-    { id: 'bait',      name: 'The Bait',      passive: 'No special ability (yet).' },
-    { id: 'gambler',   name: 'The Gambler',   passive: '+50% gold from all sources.' },
+    { id: 'ace',       name: 'The Ace',       passive: 'Starts with Sleight of Hand.' },
+    { id: 'trickster', name: 'The Trickster', passive: 'Starts with Doubletalk.' },
+    { id: 'hoarder',   name: 'The Hoarder',   passive: 'Hand size +1 (6 cards). Starts with Slow Hand.' },
+    { id: 'banker',    name: 'The Banker',    passive: 'Start with 150g + a Gilded Ace. Starts with Surveyor.' },
+    { id: 'bait',      name: 'The Bait',      passive: 'Round start: peek 1 random card from a random opponent. Starts with Spiked Trap.' },
+    { id: 'gambler',   name: 'The Gambler',   passive: '+50% gold from all sources. 1 Cursed forced each floor. Starts with Black Hole.' },
+    { id: 'sharp',     name: 'The Sharp',     passive: 'Challenge window +1 second. Starts with Tattletale.' },
+    { id: 'whisper',   name: 'The Whisper',   passive: 'Round start: peek 1 card from your left or right neighbour (toggleable). Starts with Eavesdropper.' },
   ];
 
   function affixRingClass(affix) {
@@ -596,17 +598,18 @@
         if (isForger) {
           eligible = phase === 'source'
             ? myDeck.filter(c => c.rank !== 'J')
-            : myDeck.filter(c => c.rank !== 'J' && c.id !== forgerSourceId);
+            : myDeck.filter(c => c.rank !== 'J' && c.id !== forgerSourceId && c.affix !== 'steel');
           const phaseLabel = document.createElement('div');
           phaseLabel.className = 'col-span-full w-full text-xs text-emerald-200 mb-1';
           phaseLabel.textContent = phase === 'source'
             ? 'Forger — pick the SOURCE card (its rank + affix will be cloned).'
-            : 'Forger — pick the TARGET card (becomes a copy of source).';
+            : 'Forger — pick the TARGET card (becomes a copy of source). Steel cards cannot be changed.';
           wrap.appendChild(phaseLabel);
         } else if (isStripper) {
           eligible = myDeck.filter(c => c.rank !== 'J');
         } else {
-          eligible = myDeck.filter(c => !c.affix);
+          // Affix services: any non-Steel card (with or without existing affix).
+          eligible = myDeck.filter(c => c.affix !== 'steel');
         }
         if (eligible.length === 0) {
           wrap.innerHTML = '<span class="text-xs italic text-rose-300">No eligible cards in your run deck.</span>';
@@ -756,17 +759,20 @@
                      !s.players[myIdx].eliminated && !s.players[myIdx].finishedThisRound;
       for (const c of s.mine.hand) {
         const btn = document.createElement('button');
-        let cls = 'card card-face flex items-center justify-center text-2xl font-bold text-black rounded transition';
+        let cls = 'relative card card-face flex items-center justify-center text-2xl font-bold text-black rounded transition';
         const ring = affixRingClass(c.affix);
         if (ring) cls += ' ' + ring;
         else if (c.owner === 0 || c.owner === myIdx) cls += ' ring-2 ring-emerald-400';
         if (selected.has(c.id)) cls += ' ring-4 ring-yellow-300 scale-110';
-        if (myTurn) cls += ' cursor-pointer hover:scale-105';
+        const cursedLocked = c.affix === 'cursed' && (c.cursedTurnsLeft || 0) > 0;
+        if (cursedLocked) cls += ' opacity-50 cursor-not-allowed';
+        else if (myTurn) cls += ' cursor-pointer hover:scale-105';
         else cls += ' opacity-70 cursor-not-allowed';
         btn.className = cls;
-        btn.textContent = c.rank;
-        if (c.affix) btn.title = 'Affix: ' + c.affix;
-        if (myTurn) {
+        btn.innerHTML = escapeHtml(c.rank) +
+          (cursedLocked ? '<span class="absolute -top-1 -right-1 bg-purple-700 text-white text-xs px-1 rounded-full">' + c.cursedTurnsLeft + '</span>' : '');
+        if (c.affix) btn.title = 'Affix: ' + c.affix + (cursedLocked ? ' (locked ' + c.cursedTurnsLeft + ' turn' + (c.cursedTurnsLeft === 1 ? '' : 's') + ')' : '');
+        if (myTurn && !cursedLocked) {
           btn.addEventListener('click', () => {
             if (selected.has(c.id)) selected.delete(c.id);
             else if (selected.size < 3) selected.add(c.id);
@@ -835,7 +841,15 @@
     const forkPanel = document.getElementById('betaMpFork');
     if (forkPanel) {
       if (s.phase === 'fork') renderForkPhase();
+      else if (s.phase === 'bossRelic' && typeof renderBossRelicPhase === 'function') renderBossRelicPhase();
       else forkPanel.classList.add('hidden');
+    }
+
+    // Host-only admin panel
+    const admPanel = document.getElementById('betaMpAdminPanel');
+    if (admPanel) {
+      if (s.hostId === myPlayerId) admPanel.classList.remove('hidden');
+      else admPanel.classList.add('hidden');
     }
   }
 
@@ -972,6 +986,26 @@
     // Loaded Die
     const ldBtn = document.getElementById('betaMpLoadedDieBtn');
     if (ldBtn) ldBtn.addEventListener('click', () => socket && socket.emit('beta:useLoadedDie'));
+
+    // Admin cheat buttons (host-only — server enforces)
+    const admGoldBtn = document.getElementById('betaMpAdmGoldBtn');
+    if (admGoldBtn) admGoldBtn.addEventListener('click', () => {
+      if (!socket) return;
+      const v = parseInt(document.getElementById('betaMpAdmGoldInput').value, 10) || 0;
+      socket.emit('beta:adminAddGold', { amount: v });
+    });
+    const admHeartsBtn = document.getElementById('betaMpAdmHeartsBtn');
+    if (admHeartsBtn) admHeartsBtn.addEventListener('click', () => {
+      if (!socket) return;
+      const v = parseInt(document.getElementById('betaMpAdmHeartsInput').value, 10) || 0;
+      socket.emit('beta:adminSetHearts', { hearts: v });
+    });
+    const admFloorBtn = document.getElementById('betaMpAdmFloorBtn');
+    if (admFloorBtn) admFloorBtn.addEventListener('click', () => {
+      if (!socket) return;
+      const v = parseInt(document.getElementById('betaMpAdmFloorInput').value, 10) || 1;
+      socket.emit('beta:adminSkipFloor', { floor: v });
+    });
 
     const resultBackBtn = document.getElementById('betaMpResultBackBtn');
     if (resultBackBtn) resultBackBtn.addEventListener('click', () => {

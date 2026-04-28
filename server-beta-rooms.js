@@ -35,6 +35,8 @@ const CHARACTERS = {
   banker:    { id: 'banker',    name: 'The Banker',    startingGold: 150, startingGildedA: true, startingJoker: 'surveyor' },
   bait:      { id: 'bait',      name: 'The Bait',      startingJoker: 'spikedTrap', peekAtRoundStart: true },
   gambler:   { id: 'gambler',   name: 'The Gambler',   goldMultiplier: 1.5, startingJoker: 'blackHole', forcedCursedOnNewFloor: true },
+  sharp:     { id: 'sharp',     name: 'The Sharp',     startingJoker: 'tattletale', sharpChallengeBonusMs: 1000 },
+  whisper:   { id: 'whisper',   name: 'The Whisper',   startingJoker: 'eavesdropper', whisperPeek: true },
 };
 
 // Joker catalog — passive/active perks held in 2 slots.
@@ -302,7 +304,7 @@ function publicBetaState(room, requestingPlayerId) {
     mine: me
       ? {
           id: me.id,
-          hand: (me.hand || []).map(c => ({ rank: c.rank, id: c.id, owner: c.owner, affix: c.affix || null })),
+          hand: (me.hand || []).map(c => ({ rank: c.rank, id: c.id, owner: c.owner, affix: c.affix || null, cursedTurnsLeft: c.cursedTurnsLeft || 0 })),
           runDeck: (me.runDeck || []).map(c => ({ rank: c.rank, id: c.id, affix: c.affix || null })),
           inventory: Object.assign({}, me.inventory || {}),
           jokers: (me.jokers || []).map(j => j ? { id: j.id, name: j.name, rarity: j.rarity, desc: j.desc } : null),
@@ -388,6 +390,8 @@ function challengeWindowMsFor(p) {
   // Pocket Watch stacks
   const pw = (p.relics || []).filter(r => r === 'pocketWatch').length;
   ms += pw * POCKET_WATCH_BONUS_MS;
+  // The Sharp character: +1 second
+  if (p.character && p.character.sharpChallengeBonusMs) ms += p.character.sharpChallengeBonusMs;
   return ms;
 }
 function jackLimitFor(p) {
@@ -414,6 +418,34 @@ const GLASS_BURN_RANDOM = 2;
 
 // Gilded — fired when a player begins their turn. Pays out for each Gilded
 // card currently in their hand.
+const CURSED_TURN_LOCK = 2;
+// Mark a single card with the Cursed-hold timer when it enters a hand.
+function markCursedOnEntry(card) {
+  if (card && card.affix === 'cursed' && (card.cursedTurnsLeft === undefined || card.cursedTurnsLeft <= 0)) {
+    card.cursedTurnsLeft = CURSED_TURN_LOCK;
+  }
+}
+function markAllCursedOnEntry(cards) {
+  if (!cards) return;
+  for (const c of cards) markCursedOnEntry(c);
+}
+// Tick down Cursed counters on the active player's turn START. Auto-draw if
+// the player has no playable cards because all are Cursed-locked.
+function onTurnStart(room, playerIdx) {
+  const p = room.players[playerIdx];
+  if (!p || !p.hand) return;
+  for (const c of p.hand) {
+    if (c.affix === 'cursed' && c.cursedTurnsLeft > 0) c.cursedTurnsLeft--;
+  }
+  // If every card is Cursed-locked, draw 1 from the draw pile (if available)
+  const allLocked = p.hand.length > 0 && p.hand.every(c => c.affix === 'cursed' && (c.cursedTurnsLeft || 0) > 0);
+  if (allLocked && room.drawPile.length > 0) {
+    const drawn = room.drawPile.pop();
+    p.hand.push(drawn);
+    log(room, `${p.name} - all hand cards Cursed-locked; auto-draws a ${drawn.rank}.`);
+  }
+}
+
 function triggerGildedTurn(room, playerIdx) {
   const p = room.players[playerIdx];
   if (!p || p.eliminated || !p.hand) return;
@@ -693,12 +725,14 @@ function startRound(room) {
     const isGamblerChar = p.character && p.character.forcedCursedOnNewFloor;
     if ((hasMark || isGamblerChar) && (p.roundsWon || 0) === 0) {
       const r = ['A','K','Q','10'][Math.floor(Math.random()*4)];
-      p.hand.push({
+      const cursedCard = {
         rank: r,
         id: 'curse_' + p.id + '_' + Date.now() + '_' + Math.floor(Math.random()*1000),
         owner: room.players.indexOf(p),
         affix: 'cursed',
-      });
+      };
+      markCursedOnEntry(cursedCard);
+      p.hand.push(cursedCard);
     }
   }
 
@@ -750,6 +784,24 @@ function startRound(room) {
     addPendingPeek(p, 'bait', { player: target.name, rank: c.rank });
   }
 
+  // Whisper character: round start peek at next-seat opponent's random card
+  for (const p of room.players) {
+    if (!p.character || !p.character.whisperPeek) continue;
+    const myIdx = room.players.indexOf(p);
+    const dir = (room.whisperDirection && room.whisperDirection[p.id]) === 'right' ? -1 : 1;
+    let nextIdx = myIdx;
+    for (let n = 1; n < room.players.length; n++) {
+      const ni = (myIdx + n * dir + room.players.length * room.players.length) % room.players.length;
+      const np = room.players[ni];
+      if (np && !np.eliminated && np.hand && np.hand.length > 0) { nextIdx = ni; break; }
+    }
+    const target = room.players[nextIdx];
+    if (target && target !== p && target.hand.length > 0) {
+      const c = target.hand[Math.floor(Math.random() * target.hand.length)];
+      addPendingPeek(p, 'whisper', { player: target.name, direction: (dir === 1 ? 'left/next' : 'right/prev'), rank: c.rank });
+    }
+  }
+
   // Hand Mirror relic: same as Cold Read (overlap acceptable)
   for (const p of room.players) {
     if (playerHasRelic(p, 'handMirror')) {
@@ -772,7 +824,8 @@ function startRound(room) {
     if (!room.players[i].eliminated) { room.currentTurnIdx = i; break; }
   }
   log(room, `Floor ${room.currentFloor} round — target rank: ${room.targetRank}.`);
-  // Gilded trigger for the first player
+  // Turn-start hook (Cursed tick + auto-draw + Gilded gold)
+  onTurnStart(room, room.currentTurnIdx);
   triggerGildedTurn(room, room.currentTurnIdx);
 
   // Cheater boss (Floor 6): auto-play one random card from the first player's hand.
@@ -826,6 +879,9 @@ function handlePlay(room, playerId, cardIds) {
   for (const id of cardIds) {
     const c = p.hand.find(x => x.id === id);
     if (!c) return { error: 'You do not have that card.' };
+    if (c.affix === 'cursed' && (c.cursedTurnsLeft || 0) > 0) {
+      return { error: 'A Cursed card is locked for ' + c.cursedTurnsLeft + ' more of your turn(s).' };
+    }
     cards.push(c);
   }
   // Remove from hand
@@ -848,7 +904,9 @@ function handlePlay(room, playerId, cardIds) {
   if (hollowCount > 0) {
     let drew = 0;
     for (let i = 0; i < hollowCount && room.drawPile.length > 0; i++) {
-      p.hand.push(room.drawPile.pop());
+      const card = room.drawPile.pop();
+      markCursedOnEntry(card);
+      p.hand.push(card);
       drew++;
     }
     if (drew > 0) log(room, `${p.name} draws +${drew} (Hollow).`);
@@ -957,7 +1015,8 @@ function handlePassNoChallengeInternal(room) {
   }
   // Advance turn to next active player AFTER the challenger position
   room.currentTurnIdx = findNextActiveIdx(room, room.challengerIdx - 1);
-  // Gilded trigger for the new active player
+  // Turn-start hook (Cursed tick + auto-draw + Gilded gold)
+  onTurnStart(room, room.currentTurnIdx);
   triggerGildedTurn(room, room.currentTurnIdx);
   return { ok: true };
 }
@@ -1042,7 +1101,8 @@ function handleLiar(room, playerId) {
     }
     // Apply pickup affixes (Spiked draws + Glass burns)
     pile = applyPickupAffixes(room, liarP, pile);
-    // Push remaining pile to liar's hand
+    // Push remaining pile to liar's hand (mark Cursed on entry)
+    markAllCursedOnEntry(pile);
     for (const c of pile) liarP.hand.push(c);
     room.pile = [];
     if (liarP.finishedThisRound) {
@@ -1065,6 +1125,7 @@ function handleLiar(room, playerId) {
     log(room, `${challengerP.name} called LIAR — wrong! ${challengerP.name} takes the pile.`);
     let pile = room.pile.slice();
     pile = applyPickupAffixes(room, challengerP, pile);
+    markAllCursedOnEntry(pile);
     for (const c of pile) challengerP.hand.push(c);
     room.pile = [];
     if (challengerP.finishedThisRound) {
@@ -1085,7 +1146,8 @@ function handleLiar(room, playerId) {
     }
   }
 
-  // Gilded trigger for whoever holds the new turn
+  // Turn-start hook (Cursed tick + auto-draw + Gilded gold)
+  onTurnStart(room, room.currentTurnIdx);
   triggerGildedTurn(room, room.currentTurnIdx);
 
   // After taking pile, run Jack-curse check (in case picker now hits the Jack limit)
@@ -1549,7 +1611,8 @@ function applyService(room, playerId, target) {
     return { error: (msg || 'Service cancelled — gold refunded.') };
   };
 
-  // Apply-an-affix services
+  // Apply-an-affix services. Steel cards cannot be modified at all; every
+  // other card (with or without an existing affix) can be overwritten.
   const affixMap = {
     glassShard: 'glass',
     spikedWire: 'spiked',
@@ -1559,9 +1622,11 @@ function applyService(room, playerId, target) {
   if (affixMap[itemId]) {
     const card = (p.runDeck || []).find(c => c.id === target.cardId);
     if (!card) return { error: 'Card not found in your run deck.' };
-    if (card.affix) return { error: 'That card already has an affix.' };
+    if (card.affix === 'steel') return { error: 'Steel cards cannot be changed.' };
+    const prev = card.affix;
     card.affix = affixMap[itemId];
-    return finalize(`applied ${affixMap[itemId]} to ${card.rank}.`);
+    const verb = prev ? `overwrote ${prev} with ${affixMap[itemId]}` : `applied ${affixMap[itemId]}`;
+    return finalize(`${verb} on ${card.rank}.`);
   }
 
   if (itemId === 'stripper') {
@@ -1891,6 +1956,7 @@ function useConsumable(room, playerId, itemId, options) {
     // Draw the top card; apply Cursed
     const drawn = room.drawPile.pop();
     drawn.affix = 'cursed';
+    markCursedOnEntry(drawn);
     p.hand.push(drawn);
     log(room, `${p.name} used Devil's Bargain — gained a Cursed ${drawn.rank}.`);
     return { ok: true };
@@ -1908,6 +1974,7 @@ function useConsumable(room, playerId, itemId, options) {
     p.inventory[itemId]--;
     p.hand = p.hand.filter(c => c.id !== card.id);
     const target = opps[Math.floor(Math.random() * opps.length)];
+    markCursedOnEntry(card);
     target.hand.push(card);
     log(room, `${p.name} used Magnet — sent a ${card.rank} to ${target.name}.`);
     // Magnet can push receiver over Jack limit
@@ -1931,6 +1998,14 @@ function useLoadedDie(room, playerId) {
   room.loadedDieUsedFloor = room.loadedDieUsedFloor || {};
   room.loadedDieUsedFloor[playerId] = true;
   log(room, `${p.name} used Loaded Die: target rerolled to ${newRank}.`);
+  return { ok: true };
+}
+
+// Whisper toggle direction — left/right neighbor for next round.
+function setWhisperDirection(room, playerId, dir) {
+  if (!room.whisperDirection) room.whisperDirection = {};
+  if (dir !== 'left' && dir !== 'right') return { error: 'Bad direction.' };
+  room.whisperDirection[playerId] = dir;
   return { ok: true };
 }
 
@@ -2011,6 +2086,7 @@ module.exports = {
   useTattletale,
   useConsumable,
   useLoadedDie,
+  setWhisperDirection,
   // Admin
   adminAddGold,
   adminSetHearts,
