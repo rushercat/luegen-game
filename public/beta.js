@@ -381,7 +381,7 @@
     hourglass:    { id: 'hourglass',    name: 'The Hourglass',    price: 250, desc: 'Treasure. Your challenge window is +4s. Bots without it have their windows reduced by 30%.' },
     seersEye:     { id: 'seersEye',     name: "Seer's Eye",       price: 250, desc: 'Treasure. See the affix ring (not rank) on every card in every opponent\'s hand.' },
     crackedMirror:{ id: 'crackedMirror',name: 'Cracked Mirror',   price: 300, desc: 'Treasure. Once per floor: rewind your last play (cards back to hand, pile reverted) — bots\' choices are NOT redone.' },
-    dragonScale:  { id: 'dragonScale',  name: 'Dragon Scale',     price: 300, desc: 'Treasure. Each Steel card in your hand: +1 Jack limit and +10% gold from all sources.' },
+    dragonScale:  { id: 'dragonScale',  name: 'Dragon Scale',     price: 300, desc: 'Treasure. Steel cards in your hand grant +1 Jack limit (max +1, regardless of Steel count) and +10% gold per Steel card.' },
     compass:      { id: 'compass',      name: 'The Compass',      price: 300, desc: 'Boss reward. Bot tells become readable in Act III (normally silent).' },
     tarnishedCrown:{ id: 'tarnishedCrown', name: 'Tarnished Crown', price: 250, desc: 'Boss reward. Win a floor without losing any Hearts on it = +50g bonus.' },
     cowardsCloak: { id: 'cowardsCloak', name: "Coward's Cloak",   price: 200, desc: 'Treasure. Your "Pass" actions never trigger Echo / Eavesdropper / Cold Read peeks on your hand.' },
@@ -1692,7 +1692,7 @@
     if (p === 0) {
       limit += playerLimitBonus + playerJokerBonus;
       // Dragon Scale: +1 Jack limit per Steel card in hand.
-      if (hasRelic('dragonScale')) limit += _humanSteelCount();
+      if (hasRelic('dragonScale')) limit += Math.min(1, _humanSteelCount());
     }
     if (runState && runState.botPersonalities && runState.botPersonalities[p] === 'lugen') {
       limit = 6;
@@ -5953,7 +5953,7 @@
     steel: {
       name: 'Steel',
       tag: 'Passive',
-      desc: 'Immune to Glass burns and most affix overwrites. Steel Jacks count DOUBLE toward the Jack curse. Dragon Scale relic: each Steel card in hand grants +1 Jack limit and +10% gold.',
+      desc: 'Immune to Glass burns and most affix overwrites. Steel Jacks count DOUBLE toward the Jack curse. Dragon Scale relic: Steel cards grant +1 Jack limit (max +1 total — otherwise it would be absurd) and +10% gold PER Steel card.',
     },
     mirage: {
       name: 'Mirage',
@@ -6138,6 +6138,84 @@
           '<div class="text-xs text-emerald-100">' + escapeHtml(c.desc) + '</div>';
         body.appendChild(row);
       }
+    } else if (kind === 'achievements') {
+      titleEl.textContent = '\ud83c\udfc6 Achievements';
+      const unlocked = _achGetUnlocked();
+      const progress = _achGetProgress();
+      const total = Object.keys(ACHIEVEMENT_CATALOG).length;
+      subEl.textContent = unlocked.length + ' / ' + total + ' unlocked. Progress is saved across runs.';
+      // Group by category in a stable order.
+      const ORDER = ['Mastery', 'Build', 'Economy', 'Run-defining'];
+      const PRETTY = { Mastery: 'Mastery', Build: 'Build identity', Economy: 'Economy / fluff', 'Run-defining': 'Run-defining' };
+      const byCat = {};
+      for (const id of Object.keys(ACHIEVEMENT_CATALOG)) {
+        const a = ACHIEVEMENT_CATALOG[id];
+        (byCat[a.cat] = byCat[a.cat] || []).push(a);
+      }
+      // Inline progress hints — best-effort; show what we can compute.
+      function _progressHint(id) {
+        const ach = (runState && runState.ach) || {};
+        switch (id) {
+          case 'truthWins':    return (ach.truthSurvivals || 0) + ' / 10 (this run)';
+          case 'liarsTongue':  return (state ? (state.humanLiesThisRound || 0) : 0) + ' / 10 (this round)';
+          case 'glassCannon':  return (progress.glassBurned || 0) + ' / 100 (across runs)';
+          case 'heartSurgeon': return (progress.heartShardsTotal || 0) + ' / 10 (across runs)';
+          case 'bossSlayer': {
+            const bk = progress.bossKills || {};
+            const seen = ['lugen','mirror','hollow'].filter(b => bk[b]).length;
+            return seen + ' / 3 floor-9 alts beaten';
+          }
+          case 'pacifier':     return (ach.cursedHoldStreak || 0) + ' / 5 (this run)';
+          case 'gamblersHand': return (ach.charlatanStreak || 0) + ' / 5 (this run)';
+          case 'jokersWild':   return (ach.jokersEverEquipped || 0) + ' / 5 (this run)';
+          case 'spendthrift':  return (ach.spent || 0) + ' / 2000g (this run)';
+          case 'wallet':       return ((runState && runState.gold) || 0) + ' / 1000g (current)';
+          case 'pacifist':     return (ach.liarCalls || 0) === 0 ? 'still eligible (no Liar calls)' : 'broken — already called Liar';
+          case 'stoic':        return (ach.consumableUses || 0) === 0 ? 'still eligible (no consumables used)' : 'broken — already used a consumable';
+          case 'ironWill':     return runState && runState.runDeck
+            ? runState.runDeck.filter(c => c.affix === 'steel').length + ' / 4 Steel cards in deck'
+            : '\u2014';
+          case 'strippedDown': return runState && runState.runDeck
+            ? runState.runDeck.length + ' cards in deck (need <= 4 at run win)'
+            : '\u2014';
+          case 'affixConn': {
+            if (!runState || !runState.runDeck) return '\u2014';
+            const present = new Set(runState.runDeck.filter(c => c.affix).map(c => c.affix));
+            return present.size + ' / 8 affixes present in deck';
+          }
+          default: return null;
+        }
+      }
+      for (const cat of ORDER) {
+        const arr = byCat[cat];
+        if (!arr || arr.length === 0) continue;
+        const header = document.createElement('div');
+        header.className = 'text-xs uppercase tracking-widest font-bold mt-2 mb-1 text-yellow-300';
+        const got = arr.filter(a => unlocked.includes(a.id)).length;
+        header.textContent = (PRETTY[cat] || cat) + ' (' + got + ' / ' + arr.length + ')';
+        body.appendChild(header);
+        for (const a of arr) {
+          const isUnlocked = unlocked.includes(a.id);
+          const row = document.createElement('div');
+          row.className = 'rounded-lg p-3 border ' + (isUnlocked
+            ? 'bg-yellow-900/40 border-yellow-400'
+            : 'bg-black/30 border-white/10');
+          const hint = _progressHint(a.id);
+          row.innerHTML =
+            '<div class="flex items-baseline gap-2 mb-1">' +
+              '<span class="font-bold">' + (isUnlocked ? '\ud83c\udfc6 ' : '\ud83d\udd12 ') + escapeHtml(a.name) + '</span>' +
+              (isUnlocked
+                ? '<span class="text-[10px] uppercase tracking-widest font-bold px-1.5 rounded bg-yellow-400 text-black">Unlocked</span>'
+                : '<span class="text-[10px] uppercase tracking-widest font-bold px-1.5 rounded bg-white/10 text-white/60">Locked</span>') +
+            '</div>' +
+            '<div class="text-xs text-emerald-100">' + escapeHtml(a.desc) + '</div>' +
+            (hint
+              ? '<div class="text-[10px] text-emerald-300 mt-1">Progress: ' + escapeHtml(String(hint)) + '</div>'
+              : '') +
+            '<div class="text-[10px] italic text-white/60 mt-1">Unlocks: ' + escapeHtml(a.unlocks || '\u2014') + '</div>';
+          body.appendChild(row);
+        }
+      }
     }
     modal.classList.remove('hidden');
   }
@@ -6165,6 +6243,8 @@
   if (_catAffixes) _catAffixes.addEventListener('click', () => _openCatalog('affixes'));
   const _catCons = document.getElementById('betaCatalogConsumablesBtn');
   if (_catCons) _catCons.addEventListener('click', () => _openCatalog('consumables'));
+  const _catAch = document.getElementById('betaCatalogAchievementsBtn');
+  if (_catAch) _catAch.addEventListener('click', () => _openCatalog('achievements'));
 
   // Phase 6: resume/restart prompt when re-entering beta with an active run.
   function showResumeModal() {
