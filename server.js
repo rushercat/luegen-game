@@ -1274,6 +1274,34 @@ io.on('connection', async (socket) => {
     betaMP.broadcast(io, room);
   });
 
+  // Beta MP reconnect/resume. Without this, a refresh or transient network
+  // drop loses the seat: the disconnect handler scheduled a 60s removal, and
+  // any reconnect attempt would land as a brand-new addPlayer (which fails
+  // mid-run). Now the client can reclaim its existing seat by sending the
+  // last roomId+playerId it received from beta:joined.
+  socket.on('beta:resume', ({ roomId, playerId } = {}) => {
+    const id = (roomId || '').toUpperCase();
+    const room = betaMP.betaRooms[id];
+    if (!room) return socket.emit('beta:reconnectFailed', { reason: 'Beta room no longer exists.' });
+    const player = room.players.find(p => p.id === playerId);
+    if (!player) return socket.emit('beta:reconnectFailed', { reason: 'You are no longer in that beta room.' });
+    if (player.removalTimer) { clearTimeout(player.removalTimer); player.removalTimer = null; }
+    const wasOffline = !player.connected;
+    player.socketId = socket.id;
+    player.connected = true;
+    if (socketUser) {
+      player.userId = socketUser.id;
+      player.username = socketUser.username;
+    }
+    socket.join(room.id);
+    currentBetaRoomId = room.id;
+    if (wasOffline && Array.isArray(room.log)) {
+      room.log.push(`${player.name} reconnected.`);
+    }
+    socket.emit('beta:joined', { roomId: room.id, playerId: player.id });
+    betaMP.broadcast(io, room);
+  });
+
   socket.on('beta:pickCharacter', ({ characterId } = {}) => {
     const room = betaMP.betaRooms[currentBetaRoomId];
     if (!room) return emitBetaError('Not in a beta room.');

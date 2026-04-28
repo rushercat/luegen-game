@@ -142,6 +142,30 @@
       unlockAtFloor: 9,
       unlockHint: 'Reach Floor 9 in any run.',
     },
+    // Wildcard-coded variance archetype. Every round, every run-deck card
+    // sheds its current affix and gets a fresh random one — Steel included
+    // (this character explicitly violates Steel's normal "immune to affix
+    // mutation" rule, which is the point of the build). The reroll picks
+    // uniformly from all 8 affixes and re-fires every round, so a Glass-
+    // burned RANDOM.EXE Ace might come back as Spiked next round, then as
+    // Cursed, then as Steel, then back to Gilded. Builds favour breadth
+    // over depth: Wildcard / Trickster jokers, Tracer for Spiked timing,
+    // Lucky Coin to pre-roll favourable affixes when the bias matters.
+    //
+    // Compensation: 20% off run-deck card purchases in the shop. The reroll
+    // makes long-term card investment less reliable (your Gilded Ace might
+    // become a Cursed Ace next round), so the discount lets the player buy
+    // *more* cards to soak the variance.
+    randomExe: {
+      id: 'randomExe', name: 'RANDOM.EXE',
+      flavor: "\">>> seed = roll(now); commit; reboot.\"",
+      passive: 'Round start: every run-deck card sheds its affix and gains a new random one (Steel is not safe). Run-deck cards in the shop cost 20% less.',
+      apostateReroll: true,
+      cardDiscount: 0.20,
+      startingJoker: null,
+      unlockAtFloor: 6,
+      unlockHint: 'Reach Floor 6 in any run.',
+    },
   };
 
   // Phase 5+: progression tracking. Prefers server-side state (when the
@@ -392,6 +416,13 @@
     cheater: ['pocketWatch', 'handMirror', 'compass'],
     lugen:   ['ironStomach', 'ledger', 'bookmark'],
   };
+  // Treasure-pool relics — only offered at Treasure nodes (Act III). Mogul is
+  // not in the regular pool because it has a separate unlock (5 Lugen kills);
+  // it's still pickable via the unlock-aware filter in chooseTreasure.
+  const TREASURE_POOL = [
+    'hourglass', 'seersEye', 'crackedMirror', 'dragonScale',
+    'cowardsCloak', 'steelSpine', 'stackedDeck', 'mogul',
+  ];
   const RELIC_CATALOG = {
     crackedCoin: { id: 'crackedCoin', name: 'Cracked Coin', price: 200, desc: 'Each round start: gain 5g × Hearts remaining.' },
     loadedDie:   { id: 'loadedDie',   name: 'Loaded Die',   price: 200, desc: 'Once per floor, reroll the Target Rank for the current round.' },
@@ -1031,6 +1062,30 @@
     selected.clear();
     _resetPerRoundRelicFlags();
 
+    // The Apostate: shed every run-deck card's affix and re-roll a fresh
+    // random one. Done BEFORE buildDeck so the new affixes propagate into
+    // the dealt copies (buildDeck spreads each runDeck card via {...card}).
+    // Explicitly overrides Steel — the whole identity of the character is
+    // "no card is locked." Cursed cards' lock counter is also reset since
+    // the affix itself is being replaced, not just dispelled.
+    if (runState && runState.character && runState.character.apostateReroll &&
+        Array.isArray(runState.runDeck)) {
+      let changed = 0;
+      for (const card of runState.runDeck) {
+        if (!card || card.rank === 'J') continue; // never affix Jacks
+        const next = _randAffix();
+        if (card.affix !== next) changed++;
+        card.affix = next;
+        // Cursed cards track a turn lock; clear it so the new affix takes
+        // effect cleanly even if the previous affix was Cursed.
+        if (card.cursedTurnsLeft !== undefined) card.cursedTurnsLeft = 0;
+      }
+      if (changed > 0) {
+        log("RANDOM.EXE: " + changed + " run-deck card" + (changed === 1 ? '' : 's') +
+            " rerolled their affix.");
+      }
+    }
+
     const deck = buildDeck();
     const { hands, drawPile } = deal(deck);
     applyJackFairness(hands, drawPile);
@@ -1096,8 +1151,44 @@
         affix: 'cursed',
       });
     }
-    let targetRank = RANKS[Math.floor(Math.random() * RANKS.length)];
-    // Inverted floor modifier: target rank is locked to J for the round.
+    // Target rank is biased toward whichever non-Jack rank the starter has
+    // the most of in their RUN DECK (70% biased, 30% pure random). The run
+    // deck is the persistent build — what the player has actually invested
+    // gold and choices into via Forger / Distillation / shop swaps / reward
+    // upgrades. Reading from the hand was noisier (the hand is a random
+    // sample of the round deck each round), and it could fluctuate based on
+    // a single lucky deal even when the underlying build wasn't stacked.
+    //
+    // Tie rule (per design intent): if there's no clear winner — i.e. the
+    // top rank count is shared by more than one rank — fall back to pure
+    // random. So the default 3-3-3-3 starter deck always rolls random, and
+    // partial customizations (e.g. 4-3-3-2) bias only when one rank pulls
+    // clearly ahead. This way the bias only fires on intentional stacking.
+    //
+    // Inverted floor modifier still overrides everything: target = J.
+    const TARGET_BIAS_CHANCE = 0.70;
+    function _pickTargetWithBias() {
+      const deck = (runState && runState.runDeck) || [];
+      const counts = {};
+      for (const r of RANKS) counts[r] = 0;
+      for (const c of deck) {
+        if (counts[c.rank] !== undefined) counts[c.rank]++;
+      }
+      let maxCount = 0;
+      for (const r of RANKS) if (counts[r] > maxCount) maxCount = counts[r];
+      const top = RANKS.filter(r => counts[r] === maxCount);
+      // No data, or every rank tied → random. ("If all are equal then just
+      // random" — including 2- and 3-way ties at the top, since that's not
+      // a clear-winner build either.)
+      if (maxCount === 0 || top.length > 1) {
+        return RANKS[Math.floor(Math.random() * RANKS.length)];
+      }
+      if (Math.random() >= TARGET_BIAS_CHANCE) {
+        return RANKS[Math.floor(Math.random() * RANKS.length)];
+      }
+      return top[0];
+    }
+    let targetRank = _pickTargetWithBias();
     if (runState && runState.currentFloorModifier === 'inverted') {
       targetRank = 'J';
     }
@@ -1628,15 +1719,34 @@
   // Per-rank cap used when syncing all 4 players' run decks into the round deck.
   // Each player can build their own deck however they like; the round itself
   // never contains more than this many of any single rank.
-  const ROUND_DECK_RANK_CAP = 8;
+  //
+  // Was 8, raised to 16 to match the design doc's "30 + N*8" target. Math at
+  // 4 players, 12-card run decks, 3-per-rank: 4*3 = 12 cards per non-Jack rank
+  // get gathered. Cap 8 was discarding 4 of every 12, shrinking the round
+  // deck from ~62 (design) down to ~38 (impl) and starving Spiked / Tracer /
+  // Spiked Trap of fuel. Cap 16 is well above 12 so player contributions
+  // pass through intact, while still clamping any future degenerate build
+  // (e.g. a Forger spam that pushes one rank past 16).
+  const ROUND_DECK_RANK_CAP = 16;
   const BASE_JACKS_PER_ROUND = 6;
+  // Base non-Jack cards added to every round deck. The design's "30-card base"
+  // is 6 of each of A/K/Q/10 plus 6 Jacks. Without this, the only Jacks were
+  // base and every other rank came purely from player run decks, leaving the
+  // draw pile thin and Spiked effects routinely fizzling.
+  const BASE_NON_JACK_PER_ROUND = 6;
 
   function buildDeck() {
-    // 1) Start with 6 base Jacks (vanilla, no owner) — these are "pure bluff"
-    //    cards that don't come from any player's deck.
+    // 1) Base 30: 6 each of A/K/Q/10 and 6 Jacks (per design doc). These are
+    //    the vanilla, no-owner cards that anchor the deck regardless of how
+    //    many players are at the table or what their run decks look like.
     const deck = [];
     for (let i = 0; i < BASE_JACKS_PER_ROUND; i++) {
       deck.push({ rank: 'J', id: 'rd_J_' + i, owner: -1, affix: null });
+    }
+    for (const r of ['A', 'K', 'Q', '10']) {
+      for (let i = 0; i < BASE_NON_JACK_PER_ROUND; i++) {
+        deck.push({ rank: r, id: 'rd_' + r + '_' + i, owner: -1, affix: null });
+      }
     }
 
     // 2) Gather every player's run deck into per-rank buckets. Each player
@@ -1652,25 +1762,24 @@
       }
     }
 
-    // 3) For each rank, trim to ROUND_DECK_RANK_CAP. Prefer keeping affixed
-    //    cards first (so a player's investment isn't silently dropped), then
-    //    randomize the remaining slots.
+    // 3) For each rank, count what's already in the deck (the base cards we
+    //    just pushed above) and only let player-deck cards fill up to
+    //    ROUND_DECK_RANK_CAP total per rank. Affixed cards first so a
+    //    player's gold investment isn't silently dropped on a degenerate
+    //    over-cap build.
     for (const r of Object.keys(buckets)) {
       const cards = buckets[r];
-      // Jacks already have 6 base in the deck — let any player-Jacks in but
-      // still respect the cap (base Jacks count toward it).
-      const cap = (r === 'J')
-        ? Math.max(0, ROUND_DECK_RANK_CAP - BASE_JACKS_PER_ROUND)
-        : ROUND_DECK_RANK_CAP;
-      if (cards.length <= cap) {
+      const alreadyInDeck = deck.filter(c => c.rank === r).length;
+      const remainingSlots = Math.max(0, ROUND_DECK_RANK_CAP - alreadyInDeck);
+      if (remainingSlots === 0) continue;
+      if (cards.length <= remainingSlots) {
         for (const c of cards) deck.push(c);
         continue;
       }
-      // Sort: affixed first, then random within each bucket
       const affixed = shuffle(cards.filter(c => c.affix));
       const plain   = shuffle(cards.filter(c => !c.affix));
       const ordered = affixed.concat(plain);
-      for (let i = 0; i < cap; i++) deck.push(ordered[i]);
+      for (let i = 0; i < remainingSlots; i++) deck.push(ordered[i]);
     }
 
     return shuffle(deck);
@@ -2020,9 +2129,15 @@
     if (cards.some(c => c.affix === 'echo')) {
       state.echoArmedFor = playerIdx;
     }
-    // Phase 7+: Eavesdropper — fires when previous player (NUM_PLAYERS-1) plays.
-    // Note: human is always seat 0 in solo, so this is the seat just before us.
-    if (playerIdx === ((NUM_PLAYERS - 1) % NUM_PLAYERS) && hasJoker('eavesdropper') &&
+    // Phase 7+: Eavesdropper — fires when the player just BEFORE the joker
+    // owner plays. Was hardcoded as `playerIdx === NUM_PLAYERS - 1`, which
+    // only works because the human (joker owner) is always at seat 0 in
+    // solo. The seat-relative form below is correct in solo and ports
+    // cleanly to PvP: just replace EAVESDROPPER_OWNER_SEAT with the seat
+    // that holds the joker for this client.
+    const EAVESDROPPER_OWNER_SEAT = 0; // human in solo; PvP: the local seat
+    const prevSeat = (EAVESDROPPER_OWNER_SEAT - 1 + NUM_PLAYERS) % NUM_PLAYERS;
+    if (playerIdx === prevSeat && hasJoker('eavesdropper') &&
         runState && (totalRoundsPlayed() - (runState.eavesdropperLastFiredRound !== undefined
           ? runState.eavesdropperLastFiredRound : -99)) >= 2) {
       const matches = state.hands[playerIdx].filter(c => c.rank === state.targetRank).length;
@@ -2063,8 +2178,16 @@
     }
 
     // Lugen specials: once per round, Lugen can call Liar out-of-turn.
-    // We only consider the override when Lugen is alive and isn't already
-    // the natural challenger (otherwise their normal turn handles it).
+    // The "once per round" cap applies *only* to the out-of-turn override —
+    // when Lugen is the natural next challenger, they go through the normal
+    // challenge window without consuming the flag (that's a regular call,
+    // not an interrupt). This is consistent with the design doc's "It can
+    // call Liar out-of-turn once per round." Per-round normal challenges
+    // are uncapped.
+    //
+    // The override is gated on Lugen being a different seat from both the
+    // last player and the natural challenger so we don't double-count
+    // their normal challenge as an "interrupt."
     const lugenIdx = findLugenSeat();
     if (lugenIdx >= 0 && lugenIdx !== playerIdx && lugenIdx !== challenger &&
         !state.eliminated[lugenIdx] && !state.finished[lugenIdx] &&
@@ -4849,14 +4972,26 @@
     wrap.classList.remove('hidden');
   }
 
-  // Phase 8+: Treasure node — pick a free relic from 2 random unowned ones
+  // Phase 8+: Treasure node — pick a free relic from 2 random unowned
+  // relics in the TREASURE_POOL specifically. Boss-pool relics are kept out
+  // so the post-boss relic picker stays meaningful (the design treats those
+  // pools as separate fork rewards). If the treasure pool is exhausted (all
+  // owned), fall back to other unowned relics so the player still gets
+  // something for triggering the node.
   function chooseTreasure() {
     hideAllPanels();
     const owned = (runState.relics || []);
-    const allRelicIds = Object.keys(RELIC_CATALOG);
-    // Filter by ownership AND unlock condition (e.g., Mogul is gated behind 5 Lugen kills).
-    const unowned = allRelicIds.filter(id => !owned.includes(id) && isRelicUnlocked(id));
-    const offers = shuffle(unowned).slice(0, Math.min(2, unowned.length));
+    const treasureUnowned = TREASURE_POOL.filter(id =>
+      !owned.includes(id) && RELIC_CATALOG[id] && isRelicUnlocked(id)
+    );
+    let offers = shuffle(treasureUnowned).slice(0, Math.min(2, treasureUnowned.length));
+    if (offers.length === 0) {
+      // Defensive fallback: every treasure relic owned. Offer non-boss
+      // unowned relics rather than blocking the node entirely.
+      const allRelicIds = Object.keys(RELIC_CATALOG);
+      const fallback = allRelicIds.filter(id => !owned.includes(id) && isRelicUnlocked(id));
+      offers = shuffle(fallback).slice(0, Math.min(2, fallback.length));
+    }
 
     const list = document.getElementById('betaTreasureOffers');
     if (!list) return;
@@ -5130,15 +5265,20 @@
     const row = document.createElement('div');
     const cap = (typeof runDeckCap === 'function') ? runDeckCap() : 24;
     const deckFull = (runState.runDeck || []).length >= cap;
-    // The Mogul relic: 10% off card price as well.
+    // Discount stack on run-deck card prices. Sources:
+    //   - Mogul relic: 10% off
+    //   - RANDOM.EXE character: 20% off (compensation for the affix
+    //     reroll volatility — letting them buy more cards to soak variance)
+    // We always recompute from _origPrice so the live price reflects the
+    // current set of active discounts (e.g. picking up Mogul mid-run, or
+    // re-rendering the shop after a buy).
     const mogulOn = hasRelic('mogul');
-    if (mogulOn && !off._origPrice) {
-      off._origPrice = off.price;
-      off.price = Math.floor(off.price * 0.90);
-    } else if (!mogulOn && off._origPrice) {
-      off.price = off._origPrice;
-      delete off._origPrice;
-    }
+    const cardDisc = (runState.character && runState.character.cardDiscount) || 0;
+    if (off._origPrice === undefined) off._origPrice = off.price;
+    let mult = 1;
+    if (mogulOn)        mult *= 0.90;
+    if (cardDisc > 0)   mult *= (1 - cardDisc);
+    off.price = Math.max(1, Math.floor(off._origPrice * mult));
     const canAfford = runState.gold >= off.price;
     const disabled = off.bought || !canAfford || deckFull;
     let btnLabel = off.bought ? 'Bought' : (deckFull ? 'Deck full' : 'Buy');

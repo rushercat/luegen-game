@@ -37,6 +37,11 @@ const CHARACTERS = {
   gambler:   { id: 'gambler',   name: 'The Gambler',   goldMultiplier: 1.5, startingJoker: 'blackHole', forcedCursedOnNewFloor: true },
   sharp:     { id: 'sharp',     name: 'The Sharp',     startingJoker: 'tattletale', sharpChallengeBonusMs: 1000 },
   whisper:   { id: 'whisper',   name: 'The Whisper',   startingJoker: 'eavesdropper', whisperPeek: true },
+  // Variance archetype. Every round, every run-deck card sheds its affix
+  // and gets a fresh random one (Steel included). Wired in startRound
+  // below. The 20% card discount compensates the player for the volatility
+  // — your build is unstable, so you should be able to buy more of it.
+  randomExe: { id: 'randomExe', name: 'RANDOM.EXE',   startingJoker: null, apostateReroll: true, cardDiscount: 0.20 },
 };
 
 // Joker catalog — passive/active perks held in 2 slots.
@@ -284,7 +289,11 @@ function publicBetaState(room, requestingPlayerId) {
       id: i.id, name: i.name, price: i.price, desc: i.desc, type: i.type, enabled: i.enabled,
     })),
     shopCardOffer: (room.shopCardOffer || []).map(c => ({
-      offerId: c.offerId, rank: c.rank, affix: c.affix, price: c.price,
+      offerId: c.offerId, rank: c.rank, affix: c.affix,
+      // `price` is the BUYER's effective price (factors in any character
+      // discount like RANDOM.EXE). The base 100g lives on the server; we
+      // never expose other players' discounted prices, just our own.
+      price: shopCardPriceFor(me, c),
       boughtByMe: !!(c.bought && me && c.bought[me.id]),
     })),
     players: room.players.map(p => ({
@@ -598,8 +607,22 @@ function regenerateShopOffer(room) {
   }
 }
 
+// Compute the effective price of a shop card for a specific player.
+// Discounts stack multiplicatively. Sources:
+//   - RANDOM.EXE character: 20% off (compensates for affix-reroll volatility).
+// Exposed so the client/state broadcast can show the buyer's true price.
+function shopCardPriceFor(player, offer) {
+  const base = (offer && offer.price) || 0;
+  const cardDisc = (player && player.character && player.character.cardDiscount) || 0;
+  let mult = 1;
+  if (cardDisc > 0) mult *= (1 - cardDisc);
+  return Math.max(1, Math.floor(base * mult));
+}
+
 // Buy a card from the shop's Cards section. Each player may buy each
-// offer at most once. Cards are priced at 100g; deck cap is 24.
+// offer at most once. Base price is 100g; deck cap is 24. Effective price
+// is computed per-player so a discounted character (RANDOM.EXE) doesn't
+// accidentally discount everyone else in the same room.
 function shopBuyCard(room, playerId, offerId) {
   const p = findPlayerById(room, playerId);
   if (!p) return { error: 'Not in room.' };
@@ -607,14 +630,15 @@ function shopBuyCard(room, playerId, offerId) {
   const off = (room.shopCardOffer || []).find(c => c.offerId === offerId);
   if (!off) return { error: 'Card offer not found.' };
   if (off.bought && off.bought[playerId]) return { error: 'You already bought this card.' };
-  if ((p.gold || 0) < off.price) return { error: 'Not enough gold.' };
+  const effectivePrice = shopCardPriceFor(p, off);
+  if ((p.gold || 0) < effectivePrice) return { error: 'Not enough gold.' };
   if ((p.runDeck || []).length >= 24) return { error: 'Run deck is at the cap (24).' };
-  p.gold -= off.price;
+  p.gold -= effectivePrice;
   const newId = 'p' + room.players.indexOf(p) + '_shop_' + off.offerId;
   p.runDeck.push({ rank: off.rank, id: newId, owner: room.players.indexOf(p), affix: off.affix || null });
   off.bought = off.bought || {};
   off.bought[playerId] = true;
-  log(room, p.name + ' bought a ' + off.rank + (off.affix ? ' [' + off.affix + ']' : ' (plain)') + ' for ' + off.price + 'g.');
+  log(room, p.name + ' bought a ' + off.rank + (off.affix ? ' [' + off.affix + ']' : ' (plain)') + ' for ' + effectivePrice + 'g.');
   return { ok: true };
 }
 function addPendingPeek(p, kind, payload) {
@@ -711,6 +735,28 @@ function startRound(room) {
   room.doubletalkArmed = {};
   room.doubletalkUsedRound = {};
   if (room.challengeTimer) { clearTimeout(room.challengeTimer); room.challengeTimer = null; }
+
+  // The Apostate: reroll every run-deck card's affix to a fresh random one.
+  // Run for every player whose character has apostateReroll. Done BEFORE
+  // buildRoundDeck so the new affixes propagate into the dealt copies.
+  // Steel is intentionally NOT exempt — that's the character's whole point.
+  for (const p of room.players) {
+    if (!p.character || !p.character.apostateReroll) continue;
+    if (!Array.isArray(p.runDeck)) continue;
+    let changed = 0;
+    for (const card of p.runDeck) {
+      if (!card || card.rank === 'J') continue; // never affix Jacks
+      const next = FLOOR_AFFIX_POOL[Math.floor(Math.random() * FLOOR_AFFIX_POOL.length)];
+      if (card.affix !== next) changed++;
+      card.affix = next;
+      // Cursed has a per-card turn lock; reset it since the affix is being
+      // wholesale replaced.
+      if (card.cursedTurnsLeft !== undefined) card.cursedTurnsLeft = 0;
+    }
+    if (changed > 0) {
+      log(room, `${p.name} (RANDOM.EXE): ${changed} run-deck card${changed === 1 ? '' : 's'} rerolled their affix.`);
+    }
+  }
 
   // Build deck and deal
   const deck = buildRoundDeck(room);
@@ -856,14 +902,39 @@ function startRound(room) {
     }
   }
 
-  // Pick a target rank
-  room.targetRank = RANKS_PLAYABLE[Math.floor(Math.random() * RANKS_PLAYABLE.length)];
-
-  // Pick first turn — first non-eliminated player
+  // Pick first turn — first non-eliminated player. Done BEFORE the target
+  // pick so the bias below can read the starter's run deck.
   room.currentTurnIdx = 0;
   for (let i = 0; i < room.players.length; i++) {
     if (!room.players[i].eliminated) { room.currentTurnIdx = i; break; }
   }
+
+  // Target rank is biased toward whichever non-Jack rank the starter has
+  // the most of in their RUN DECK (70% biased, 30% pure random). The run
+  // deck is the persistent build (Forger / Distillation / shop swaps /
+  // reward upgrades have all gone in there); reading from the dealt hand
+  // was noisier and rewarded lucky deals over actual build choices.
+  //
+  // Tie rule: if there's no clear winner — top count shared by more than
+  // one rank — fall back to pure random. So a stock 3-3-3-3 deck always
+  // rolls random, and only intentional stacking biases the target.
+  const TARGET_BIAS_CHANCE = 0.70;
+  const _starter = room.players[room.currentTurnIdx];
+  const _starterDeck = (_starter && _starter.runDeck) || [];
+  const _counts = {};
+  for (const r of RANKS_PLAYABLE) _counts[r] = 0;
+  for (const c of _starterDeck) {
+    if (_counts[c.rank] !== undefined) _counts[c.rank]++;
+  }
+  let _maxCount = 0;
+  for (const r of RANKS_PLAYABLE) if (_counts[r] > _maxCount) _maxCount = _counts[r];
+  const _top = RANKS_PLAYABLE.filter(r => _counts[r] === _maxCount);
+  if (_maxCount > 0 && _top.length === 1 && Math.random() < TARGET_BIAS_CHANCE) {
+    room.targetRank = _top[0];
+  } else {
+    room.targetRank = RANKS_PLAYABLE[Math.floor(Math.random() * RANKS_PLAYABLE.length)];
+  }
+
   log(room, `Floor ${room.currentFloor} round — target rank: ${room.targetRank}.`);
   // Turn-start hook (Cursed tick + auto-draw + Gilded gold)
   onTurnStart(room, room.currentTurnIdx);
@@ -916,6 +987,18 @@ function handlePlay(room, playerId, cardIds) {
   if (!Array.isArray(cardIds) || cardIds.length === 0 || cardIds.length > 3) {
     return { error: 'Play 1–3 cards.' };
   }
+  // Duplicate-id guard. Without this, a client sending ['X','X'] would clone
+  // the card: it gets pushed to the pile twice but filtered from the hand
+  // only once.
+  const idSet = new Set(cardIds);
+  if (idSet.size !== cardIds.length) return { error: 'Duplicate card in play.' };
+  // Belt-and-suspenders: every id must be a string of reasonable length.
+  // Stops a malicious client from sending oversized strings or non-strings.
+  for (const id of cardIds) {
+    if (typeof id !== 'string' || id.length === 0 || id.length > 80) {
+      return { error: 'Bad card id.' };
+    }
+  }
   const cards = [];
   for (const id of cardIds) {
     const c = p.hand.find(x => x.id === id);
@@ -925,8 +1008,10 @@ function handlePlay(room, playerId, cardIds) {
     }
     cards.push(c);
   }
-  // Remove from hand
-  p.hand = p.hand.filter(c => !cardIds.includes(c.id));
+  // Remove from hand using the deduped set rather than the raw array — both
+  // are equivalent now that we reject duplicates, but using the set is a bit
+  // faster on an Array.includes check.
+  p.hand = p.hand.filter(c => !idSet.has(c.id));
   // Add to pile
   for (const c of cards) room.pile.push(c);
 
@@ -1015,6 +1100,20 @@ function openChallengeWindow(room) {
   room.challengeTimer = setTimeout(() => {
     if (!betaRooms[room.id]) return;
     if (!room.challengeOpen) return;
+    // Race guard: if a human LIAR call is mid-resolution we must not also
+    // fire the no-challenge fallback. _handleLiarInner sets the flag for
+    // the duration of the resolution; if it races us, defer briefly and
+    // re-check on the next tick.
+    if (room.challengeInFlight) {
+      setTimeout(() => {
+        if (!betaRooms[room.id]) return;
+        if (!room.challengeOpen) return;
+        if (room.challengeInFlight) return; // give up — LIAR resolved it
+        handlePassNoChallengeInternal(room);
+        if (room._io) broadcast(room._io, room);
+      }, 25);
+      return;
+    }
     handlePassNoChallengeInternal(room);
     if (room._io) broadcast(room._io, room);
   }, ms + 50);
@@ -1063,6 +1162,21 @@ function handlePassNoChallengeInternal(room) {
 }
 
 function handleLiar(room, playerId) {
+  // In-flight lock: same pattern as live server.js callLiar. Two near-
+  // simultaneous LIAR calls (e.g. a bot timeout firing in the same tick as a
+  // human click) used to both pass the validation block, both clear the pile,
+  // and double-mutate room state. The flag plus try/finally guarantees only
+  // one resolution per challenge window.
+  if (room.challengeInFlight) return { error: 'Challenge already resolving.' };
+  room.challengeInFlight = true;
+  try {
+    return _handleLiarInner(room, playerId);
+  } finally {
+    room.challengeInFlight = false;
+  }
+}
+
+function _handleLiarInner(room, playerId) {
   const p = findPlayerById(room, playerId);
   if (!p) return { error: 'Not in room.' };
   const idx = room.players.indexOf(p);

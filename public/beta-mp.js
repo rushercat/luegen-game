@@ -22,6 +22,7 @@
     { id: 'gambler',   name: 'The Gambler',   startingJoker: 'blackHole',     passive: '+50% gold from all sources. 1 Cursed forced each floor. Starts with Black Hole.' },
     { id: 'sharp',     name: 'The Sharp',     startingJoker: 'tattletale',    passive: 'Challenge window +1 second. Starts with Tattletale.' },
     { id: 'whisper',   name: 'The Whisper',   startingJoker: 'eavesdropper',  passive: 'Round start: peek 1 card from your left or right neighbour (toggleable). Starts with Eavesdropper.' },
+    { id: 'randomExe', name: 'RANDOM.EXE',    startingJoker: null,            passive: 'Round start: every run-deck card sheds its affix and gains a new random one (Steel not safe). Run-deck cards in the shop cost 20% less.' },
   ];
 
   // Open a detail modal for a character — shows passive + starting joker info.
@@ -103,6 +104,33 @@
     catch (e) { return null; }
   }
 
+  // Persisted reconnect identity. We stash the last room+player IDs in
+  // localStorage so a refresh or transient network drop can resume the seat
+  // via beta:resume. Cleared when the player explicitly leaves.
+  const _RESUME_ROOM_KEY   = 'lugen-beta-mp-room';
+  const _RESUME_PLAYER_KEY = 'lugen-beta-mp-player';
+
+  function rememberSession(roomId, playerId) {
+    try {
+      if (roomId)   localStorage.setItem(_RESUME_ROOM_KEY, roomId);
+      if (playerId) localStorage.setItem(_RESUME_PLAYER_KEY, playerId);
+    } catch (e) {}
+  }
+  function forgetSession() {
+    try {
+      localStorage.removeItem(_RESUME_ROOM_KEY);
+      localStorage.removeItem(_RESUME_PLAYER_KEY);
+    } catch (e) {}
+  }
+  function recallSession() {
+    try {
+      return {
+        roomId:   localStorage.getItem(_RESUME_ROOM_KEY)   || null,
+        playerId: localStorage.getItem(_RESUME_PLAYER_KEY) || null,
+      };
+    } catch (e) { return { roomId: null, playerId: null }; }
+  }
+
   // ==================== Connect ====================
   function ensureSocket() {
     if (socket) return socket;
@@ -112,6 +140,7 @@
     socket.on('beta:joined', ({ roomId, playerId }) => {
       myRoomId = roomId;
       myPlayerId = playerId;
+      rememberSession(roomId, playerId);
       const codeEl = document.getElementById('betaMpRoomCode');
       if (codeEl) codeEl.textContent = roomId;
       showLobby();
@@ -131,6 +160,33 @@
       } else {
         alert(message || 'Server error.');
       }
+    });
+
+    // Reconnect handshake: socket.io auto-reconnects after a network blip,
+    // but our seat is still on the server (with a 60s removal timer). On
+    // every (re)connect, if we have a saved session, ask the server to
+    // reattach us to it. The 'connect' event fires on the initial connect
+    // too — that's fine; if the server doesn't recognize the saved session
+    // it returns beta:reconnectFailed and we clear it locally.
+    socket.on('connect', () => {
+      const sess = recallSession();
+      if (sess.roomId && sess.playerId) {
+        socket.emit('beta:resume', { roomId: sess.roomId, playerId: sess.playerId });
+      }
+    });
+
+    socket.on('beta:reconnectFailed', ({ reason } = {}) => {
+      forgetSession();
+      myRoomId = null;
+      myPlayerId = null;
+      lastState = null;
+      const errEl = document.getElementById('betaMpError');
+      if (errEl) {
+        errEl.textContent = reason || 'Could not reconnect to your beta room.';
+        errEl.classList.remove('hidden');
+        setTimeout(() => errEl.classList.add('hidden'), 6000);
+      }
+      showEntry();
     });
   }
 
@@ -1124,6 +1180,7 @@
     const leaveBtn = document.getElementById('betaMpLeaveBtn');
     if (leaveBtn) leaveBtn.addEventListener('click', () => {
       if (socket) socket.emit('beta:leave');
+      forgetSession();   // explicit leave → don't auto-rejoin on next connect
       myRoomId = null;
       myPlayerId = null;
       lastState = null;
@@ -1171,6 +1228,7 @@
     const resultBackBtn = document.getElementById('betaMpResultBackBtn');
     if (resultBackBtn) resultBackBtn.addEventListener('click', () => {
       if (socket) socket.emit('beta:leave');
+      forgetSession();   // run is over — don't auto-rejoin
       myRoomId = null;
       myPlayerId = null;
       lastState = null;
